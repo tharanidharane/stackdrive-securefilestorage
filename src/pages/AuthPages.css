@@ -1,0 +1,37 @@
+.auth-footer {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: var(--space-6);
+}
+
+.password-wrapper {
+  position: relative;
+}
+
+.password-toggle {
+  position: absolute;
+  right: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: var(--space-1);
+  display: flex;
+  align-items: center;
+  transition: color var(--transition-fast);
+}
+
+.password-toggle:hover {
+  color: var(--text-secondary);
+}
+
+.verify-icon {
+  color: var(--color-safe);
+  margin-bottom: var(--space-5);
+  display: flex;
+  justify-content: center;
+  animation: modalIn 0.4s var(--ease-bounce);
+}

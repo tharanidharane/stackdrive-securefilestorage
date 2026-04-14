@@ -1,0 +1,89 @@
+.header {
+  height: 56px;
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--bg-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-8);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.header__left {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.header__title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: var(--text-lg);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.header__subtitle {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.header__right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+}
+
+.header__bell {
+  position: relative;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  transition: all var(--transition-base);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.header__bell:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.header__bell-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  background: var(--color-threat);
+  border-radius: var(--radius-full);
+  border: 2px solid var(--bg-base);
+}
+
+.header__user {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.header__avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+}
+
+.header__email {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}

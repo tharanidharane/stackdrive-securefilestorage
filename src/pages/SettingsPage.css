@@ -1,0 +1,209 @@
+.settings-section {
+  margin-bottom: var(--space-8);
+}
+
+.settings-section__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: var(--space-4);
+}
+
+/* AWS Card */
+.aws-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+}
+
+.aws-card--connected {
+  border-color: color-mix(in srgb, var(--color-safe) 30%, var(--bg-border));
+}
+
+.aws-card__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.aws-card__status-text {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.aws-card__details {
+  margin-bottom: var(--space-5);
+}
+
+.aws-card__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--bg-border);
+}
+
+.aws-card__row:last-child {
+  border-bottom: none;
+}
+
+.aws-card__label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.aws-card__value {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.aws-card--disconnected {
+  border-style: dashed;
+}
+
+.aws-card__cta {
+  text-align: center;
+  padding: var(--space-5);
+}
+
+.aws-card__cta-icon {
+  color: var(--accent);
+  margin-bottom: var(--space-4);
+  opacity: 0.6;
+}
+
+.aws-card__cta h4 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: var(--text-lg);
+  color: var(--text-primary);
+  margin-bottom: var(--space-2);
+}
+
+.aws-card__cta p {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  max-width: 400px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+/* Profile Card */
+.profile-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+}
+
+.profile-card__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--bg-border);
+}
+
+.profile-card__row:last-child {
+  border-bottom: none;
+}
+
+.profile-card__icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.profile-card__label {
+  display: block;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.profile-card__value {
+  display: block;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  margin-top: 2px;
+}
+
+/* Provisioning Overlay */
+.provision-overlay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+}
+
+.provision-card {
+  text-align: center;
+  max-width: 400px;
+}
+
+.provision-spinner {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto var(--space-5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  animation: pulse 1.5s ease infinite;
+}
+
+.provision-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: var(--text-xl);
+  color: var(--text-primary);
+  margin-bottom: var(--space-2);
+}
+
+.provision-subtitle {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  margin-bottom: var(--space-6);
+}
+
+.provision-steps {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.provision-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  transition: color var(--transition-base);
+}
+
+.provision-step--done {
+  color: var(--color-safe);
+}
+
+.provision-step--active {
+  color: var(--text-primary);
+}
+
+.provision-step__dot {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}

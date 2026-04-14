@@ -1,0 +1,48 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: var(--radius-sm);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.badge--small {
+  padding: 1px 6px;
+  font-size: 10px;
+}
+
+.badge--safe {
+  color: var(--color-safe);
+  background: var(--badge-safe);
+}
+
+.badge--blocked {
+  color: var(--color-threat);
+  background: var(--badge-threat);
+}
+
+.badge--scanning {
+  color: var(--color-scan);
+  background: var(--badge-scan);
+  animation: pulse 1s ease infinite;
+}
+
+.badge--quarantine {
+  color: var(--color-queue);
+  background: var(--badge-queue);
+}
+
+.badge--pass {
+  color: var(--color-pass);
+  background: var(--badge-pass);
+}
+
+.badge--pending {
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+}

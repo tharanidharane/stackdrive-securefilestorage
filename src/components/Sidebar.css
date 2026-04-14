@@ -1,0 +1,132 @@
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 220px;
+  height: 100vh;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--bg-border);
+  display: flex;
+  flex-direction: column;
+  z-index: 200;
+  animation: slideInLeft 0.4s ease-out;
+  transition: width var(--transition-smooth);
+}
+
+.sidebar--collapsed {
+  width: 64px;
+}
+
+.sidebar__logo {
+  height: 64px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-4);
+  flex-shrink: 0;
+}
+
+.sidebar__logo-icon {
+  width: 36px;
+  height: 36px;
+  background: linear-gradient(135deg, var(--brand-green), var(--accent));
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  flex-shrink: 0;
+}
+
+.sidebar__logo-text {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: var(--text-lg);
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.sidebar__separator {
+  height: 1px;
+  background: var(--bg-border);
+  margin: 0 var(--space-4);
+}
+
+.sidebar__nav {
+  flex: 1;
+  padding: var(--space-3) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.sidebar__nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: 48px;
+  padding: var(--space-3) var(--space-4);
+  margin: 0 var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: var(--text-sm);
+  font-weight: 400;
+  transition: all var(--transition-base);
+  position: relative;
+  border-left: 3px solid transparent;
+}
+
+.sidebar__nav-item:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.sidebar__nav-item--active {
+  border-left-color: var(--accent);
+  color: var(--text-accent);
+  background: var(--bg-elevated);
+  font-size: var(--text-base);
+  font-weight: 500;
+}
+
+.sidebar__nav-item--active .sidebar__nav-icon {
+  color: var(--text-accent);
+}
+
+.sidebar__nav-icon {
+  flex-shrink: 0;
+  transition: color var(--transition-fast);
+}
+
+.sidebar__nav-label {
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.sidebar__bottom {
+  flex-shrink: 0;
+  padding-bottom: var(--space-4);
+}
+
+.sidebar__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: calc(100% - var(--space-4));
+  margin: var(--space-3) var(--space-2) 0;
+  padding: var(--space-3) var(--space-4);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+
+.sidebar__toggle:hover {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}

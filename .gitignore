@@ -1,4 +1,6 @@
+# =========================
 # Logs
+# =========================
 logs
 *.log
 npm-debug.log*
@@ -7,18 +9,79 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
+# =========================
+# Node / Frontend
+# =========================
+node_modules/
+dist/
+dist-ssr/
+.vite/
 *.local
 
-# Editor directories and files
-.vscode/*
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+pqc-env/
+
+# =========================
+# Environment Variables (SECRETS)
+# =========================
+.env
+.env.*
+backend/.env
+
+# =========================
+# Database
+# =========================
+*.db
+*.sqlite3
+
+# =========================
+# Backend Storage
+# =========================
+backend/storage/
+backend/uploads/
+backend/temp/
+
+# =========================
+# Testing
+# =========================
+.coverage
+.coverage.*
+.pytest_cache/
+.hypothesis/
+.nox/
+
+# =========================
+# Editors
+# =========================
+.vscode/
 !.vscode/extensions.json
-.idea
-.DS_Store
+.idea/
 *.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+*.swp
+*.swo
+
+# =========================
+# OS Files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Docker (optional)
+# =========================
+*.tar
+*.img
+
+

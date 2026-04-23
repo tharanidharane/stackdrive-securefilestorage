@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { BarChart2, Upload, FolderOpen, Shield, Settings, ChevronLeft, ChevronRight, Zap } from 'lucide-react';
+import { BarChart2, Upload, FolderOpen, Shield, Settings, ChevronLeft, ChevronRight } from 'lucide-react';
+import LogoIcon from './LogoIcon';
 import './Sidebar.css';
 
 const navItems = [
@@ -16,7 +17,7 @@ export default function Sidebar({ collapsed, onToggle }) {
     <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''}`}>
       <div className="sidebar__logo">
         <div className="sidebar__logo-icon">
-          <Zap size={20} />
+          <LogoIcon />
         </div>
         {!collapsed && <span className="sidebar__logo-text">StackDrive</span>}
       </div>

@@ -2,6 +2,8 @@
 StackDrive — Flask Backend API
 Zero-Trust Secure Cloud File Ingestion Gateway
 """
+from dotenv import load_dotenv
+load_dotenv()  # Load .env file (VT_API_KEY, Fargate config, etc.)
 import os
 import uuid
 import threading
@@ -19,12 +21,10 @@ from flask_jwt_extended import (
 from flask_mail import Mail, Message
 import bcrypt
 import io
-import base64
-from Crypto.Cipher import AES
 
 from config import Config
 from models import db, User, File, PipelineStage, Notification
-from pipeline import init_pipeline_stages, run_pipeline, compute_sha256
+from pipeline import init_pipeline_stages, run_pipeline, compute_sha256, migrate_old_stage_names
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -38,8 +38,11 @@ app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD', 'dummy-pass-123')
 mail = Mail(app)
 
 # Init extensions
-CORS(app, origins=['http://localhost:5173', 'http://127.0.0.1:5173'],
-     supports_credentials=True)
+CORS(app, origins=[
+    'http://localhost:5173', 'http://127.0.0.1:5173',
+    'http://localhost:5174', 'http://127.0.0.1:5174'
+], supports_credentials=True)
+
 jwt = JWTManager(app)
 db.init_app(app)
 
@@ -50,6 +53,8 @@ os.makedirs(app.config['SECURE_FOLDER'], exist_ok=True)
 # Create tables
 with app.app_context():
     db.create_all()
+    # Migrate old pipeline stage names to new naming convention
+    migrate_old_stage_names()
 
 
 # ════════════════════════════════════════
@@ -184,6 +189,24 @@ def connect_aws():
                 }
             )
 
+            # Enable CORS for direct browser uploads on the quarantine bucket
+            if b == q_bucket:
+                s3.put_bucket_cors(
+                    Bucket=b,
+                    CORSConfiguration={
+                        'CORSRules': [{
+                            'AllowedHeaders': ['*'],
+                            'AllowedMethods': ['PUT', 'POST', 'GET'],
+                            'AllowedOrigins': [
+                                'http://localhost:5173', 'http://127.0.0.1:5173',
+                                'http://localhost:5174', 'http://127.0.0.1:5174'
+                            ],
+                            'ExposeHeaders': ['ETag'],
+                            'MaxAgeSeconds': 3600
+                        }]
+                    }
+                )
+
         # 3. Create KMS Key
         kms = session.client('kms')
         key_resp = kms.create_key(
@@ -257,7 +280,232 @@ def disconnect_aws():
 
 
 # ════════════════════════════════════════
-# FILE UPLOAD
+# FILE UPLOAD — PRESIGNED MULTIPART (FAST)
+# ════════════════════════════════════════
+
+# Chunk size for multipart upload: 10MB per part
+MULTIPART_CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB
+
+@app.route('/api/upload/initiate', methods=['POST'])
+@jwt_required()
+def initiate_upload():
+    """
+    Step 1: Initiate a multipart upload on S3 and return presigned URLs
+    for each chunk so the browser can upload directly to S3.
+    
+    Request body: { fileName: str, fileSize: int }
+    Response: { uploadId, fileId, s3Key, chunkSize, presignedUrls: [...], totalParts }
+    """
+    user = User.query.get(get_jwt_identity())
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    if not user.aws_connected:
+        return jsonify({'error': 'AWS account not connected. Go to Settings to connect.'}), 403
+    
+    data = request.get_json()
+    file_name = data.get('fileName', '')
+    file_size = data.get('fileSize', 0)
+    
+    if not file_name:
+        return jsonify({'error': 'File name is required'}), 400
+
+    if not file_name.lower().endswith('.zip'):
+        return jsonify({'error': 'Only .zip files are accepted'}), 400
+
+    if file_size > app.config['MAX_CONTENT_LENGTH']:
+        return jsonify({'error': 'File exceeds 500MB limit'}), 413
+
+    safe_name = secure_filename(file_name)
+    file_id = str(uuid.uuid4())
+    s3_key = f"uploads/{file_id}/{safe_name}"
+
+    try:
+        session = boto3.Session(
+            aws_access_key_id=user.aws_access_key,
+            aws_secret_access_key=user.aws_secret_key,
+            region_name=user.aws_region
+        )
+        s3 = session.client('s3')
+
+        # Initiate multipart upload
+        mpu = s3.create_multipart_upload(
+            Bucket=user.quarantine_bucket,
+            Key=s3_key,
+        )
+        upload_id = mpu['UploadId']
+
+        # Calculate total parts
+        total_parts = max(1, -(-file_size // MULTIPART_CHUNK_SIZE))  # Ceiling division
+
+        # Generate presigned URLs for each part
+        presigned_urls = []
+        for part_number in range(1, total_parts + 1):
+            url = s3.generate_presigned_url(
+                'upload_part',
+                Params={
+                    'Bucket': user.quarantine_bucket,
+                    'Key': s3_key,
+                    'UploadId': upload_id,
+                    'PartNumber': part_number,
+                },
+                ExpiresIn=3600,  # 1 hour
+            )
+            presigned_urls.append(url)
+
+        # Format size display
+        if file_size < 1024:
+            size_display = f"{file_size} B"
+        elif file_size < 1024 * 1024:
+            size_display = f"{file_size / 1024:.1f} KB"
+        elif file_size < 1024 * 1024 * 1024:
+            size_display = f"{file_size / (1024 * 1024):.1f} MB"
+        else:
+            size_display = f"{file_size / (1024 * 1024 * 1024):.1f} GB"
+
+        # Create file record in DB immediately (status = quarantine)
+        file_record = File(
+            id=file_id,
+            user_id=user.id,
+            name=file_name,
+            size=file_size,
+            size_display=size_display,
+            status='quarantine',
+        )
+        db.session.add(file_record)
+        db.session.commit()
+
+        return jsonify({
+            'uploadId': upload_id,
+            'fileId': file_id,
+            's3Key': s3_key,
+            'chunkSize': MULTIPART_CHUNK_SIZE,
+            'totalParts': total_parts,
+            'presignedUrls': presigned_urls,
+        }), 200
+
+    except ClientError as e:
+        return jsonify({'error': f"S3 multipart initiation failed: {str(e)}"}), 500
+    except Exception as e:
+        return jsonify({'error': f"Unexpected error: {str(e)}"}), 500
+
+
+@app.route('/api/upload/complete', methods=['POST'])
+@jwt_required()
+def complete_upload():
+    """
+    Step 2: Complete the multipart upload after all parts are uploaded.
+    Then kick off the security pipeline.
+    
+    Request body: { uploadId, fileId, s3Key, parts: [{PartNumber, ETag}, ...] }
+    """
+    user = User.query.get(get_jwt_identity())
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    data = request.get_json()
+    upload_id = data.get('uploadId')
+    file_id = data.get('fileId')
+    s3_key = data.get('s3Key')
+    parts = data.get('parts', [])
+
+    if not upload_id or not file_id or not s3_key or not parts:
+        return jsonify({'error': 'Missing required fields'}), 400
+
+    file_record = File.query.filter_by(id=file_id, user_id=user.id).first()
+    if not file_record:
+        return jsonify({'error': 'File record not found'}), 404
+
+    try:
+        session = boto3.Session(
+            aws_access_key_id=user.aws_access_key,
+            aws_secret_access_key=user.aws_secret_key,
+            region_name=user.aws_region
+        )
+        s3 = session.client('s3')
+
+        # Complete the multipart upload on S3
+        s3.complete_multipart_upload(
+            Bucket=user.quarantine_bucket,
+            Key=s3_key,
+            UploadId=upload_id,
+            MultipartUpload={
+                'Parts': sorted(parts, key=lambda p: p['PartNumber'])
+            }
+        )
+
+        # Initialize pipeline stages
+        init_pipeline_stages(file_id)
+
+        # Extract just the filename from s3_key for pipeline
+        safe_name = s3_key.split('/')[-1]
+
+        # Run pipeline in background — no temp file needed, file is already in S3!
+        thread = threading.Thread(
+            target=run_pipeline,
+            args=(file_id, s3_key, user.id, None, None),
+            daemon=True,
+        )
+        thread.start()
+
+        return jsonify({
+            'message': 'File uploaded to quarantine — pipeline starting',
+            'file': file_record.to_dict(),
+        }), 201
+
+    except ClientError as e:
+        return jsonify({'error': f"S3 multipart completion failed: {str(e)}"}), 500
+    except Exception as e:
+        return jsonify({'error': f"Unexpected error: {str(e)}"}), 500
+
+
+@app.route('/api/upload/abort', methods=['POST'])
+@jwt_required()
+def abort_upload():
+    """
+    Abort a multipart upload if something goes wrong on the frontend.
+    Cleans up incomplete parts from S3.
+    
+    Request body: { uploadId, fileId, s3Key }
+    """
+    user = User.query.get(get_jwt_identity())
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    data = request.get_json()
+    upload_id = data.get('uploadId')
+    file_id = data.get('fileId')
+    s3_key = data.get('s3Key')
+
+    try:
+        session = boto3.Session(
+            aws_access_key_id=user.aws_access_key,
+            aws_secret_access_key=user.aws_secret_key,
+            region_name=user.aws_region
+        )
+        s3 = session.client('s3')
+
+        # Abort the multipart upload
+        s3.abort_multipart_upload(
+            Bucket=user.quarantine_bucket,
+            Key=s3_key,
+            UploadId=upload_id,
+        )
+    except Exception:
+        pass
+
+    # Clean up DB record
+    if file_id:
+        file_record = File.query.filter_by(id=file_id, user_id=user.id).first()
+        if file_record:
+            db.session.delete(file_record)
+            db.session.commit()
+
+    return jsonify({'message': 'Upload aborted'}), 200
+
+
+# ════════════════════════════════════════
+# LEGACY UPLOAD (Fallback for small files or non-multipart)
 # ════════════════════════════════════════
 
 @app.route('/api/upload', methods=['POST'])
@@ -291,24 +539,25 @@ def upload_file():
     if file_size > app.config['MAX_CONTENT_LENGTH']:
         return jsonify({'error': 'File exceeds 500MB limit'}), 413
     
-    # Direct Upload to AWS Quarantine Bucket
+    import tempfile
+    
+    # Save the file locally first instead of blocking user request for S3 upload
+    temp_dir = tempfile.mkdtemp()
+    temp_filepath = os.path.join(temp_dir, safe_name)
     try:
-        session = boto3.Session(
-            aws_access_key_id=user.aws_access_key,
-            aws_secret_access_key=user.aws_secret_key,
-            region_name=user.aws_region
-        )
-        s3 = session.client('s3')
-        s3.upload_fileobj(file, user.quarantine_bucket, safe_name)
+        file.save(temp_filepath)
     except Exception as e:
-        return jsonify({'error': f"Failed to upload to AWS S3: {str(e)}"}), 500
+        return jsonify({'error': f"Failed to save file: {str(e)}"}), 500
     
     # Format size display
-    size_mb = file_size / (1024 * 1024)
-    if size_mb >= 1024:
-        size_display = f"{size_mb / 1024:.1f} GB"
+    if file_size < 1024:
+        size_display = f"{file_size} B"
+    elif file_size < 1024 * 1024:
+        size_display = f"{file_size / 1024:.1f} KB"
+    elif file_size < 1024 * 1024 * 1024:
+        size_display = f"{file_size / (1024 * 1024):.1f} MB"
     else:
-        size_display = f"{size_mb:.1f} MB"
+        size_display = f"{file_size / (1024 * 1024 * 1024):.1f} GB"
     
     # Create file record
     file_record = File(
@@ -328,7 +577,7 @@ def upload_file():
     # Run pipeline in background thread
     thread = threading.Thread(
         target=run_pipeline,
-        args=(file_id, safe_name, user.id),
+        args=(file_id, safe_name, user.id, temp_filepath, temp_dir),
         daemon=True,
     )
     thread.start()
@@ -381,42 +630,16 @@ def download_file(file_id):
         return jsonify({'error': 'File not available in AWS S3'}), 404
         
     try:
-        session = boto3.Session(
-            aws_access_key_id=user.aws_access_key,
-            aws_secret_access_key=user.aws_secret_key,
-            region_name=user.aws_region
-        )
-        s3 = session.client('s3')
-        
-        raw_path = file.storage_path.split('?aes=')
-        s3_url = raw_path[0]
-        
-        parts = s3_url.replace('s3://', '').split('/', 1)
-        bucket = parts[0]
-        key = parts[1]
-        
-        obj = s3.get_object(Bucket=bucket, Key=key)
-        raw_download = obj['Body'].read()
-        
-        # Strip the simulated Quantum structural headers dynamically
-        ml_kem_len = 1088 + 41
-        ml_dsa_len = 3293 + 37
-        aes_blob = raw_download[ml_kem_len:-ml_dsa_len]
-        
-        # Deconstruct AES container
-        nonce = aes_blob[:16]
-        tag = aes_blob[-16:]
-        ciphertext = aes_blob[16:-16]
-        
-        # Pull the true random AES-256 key
-        if len(raw_path) > 1:
-            aes_key = base64.urlsafe_b64decode(raw_path[1])
-        else:
-            aes_key = bytes.fromhex(file.sha256_hash) # Legacy fallback
-            
-        cipher = AES.new(aes_key, AES.MODE_GCM, nonce=nonce)
-        decrypted_data = cipher.decrypt_and_verify(ciphertext, tag)
-        
+        from encryption import create_encryption_engine, HybridEncryptionEngine
+
+        from encryption import create_encryption_engine
+
+        # strictly enforce v2 hybrid decryption
+        engine, _ = create_encryption_engine(user)
+        decrypted_data, error = engine.decrypt_file(file)
+        if error:
+            return jsonify({'error': error}), 500
+
         return send_file(
             io.BytesIO(decrypted_data),
             as_attachment=True,
@@ -426,7 +649,7 @@ def download_file(file_id):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({'error': f'S3 Retrieval & Decryption Failed: {str(e)}'}), 500
+        return jsonify({'error': f'Decryption Failed: {str(e)}'}), 500
 
 
 @app.route('/api/files/<file_id>', methods=['DELETE'])
@@ -447,9 +670,21 @@ def delete_file(file_id):
             )
             s3 = session.client('s3')
             
-            s3_url = file.storage_path.split('?aes=')[0]
-            parts = s3_url.replace('s3://', '').split('/', 1)
+            # Clean S3 path handling (no ?aes= param)
+            parts = file.storage_path.replace('s3://', '').split('/', 1)
             s3.delete_object(Bucket=parts[0], Key=parts[1])
+
+            # Clean up PQC private keys from Secrets Manager (v2 files only)
+            if file.secrets_manager_arn:
+                try:
+                    sm = session.client('secretsmanager')
+                    secret_name = f"stackdrive/{user.id}/{file_id}/pqc-keys"
+                    sm.delete_secret(
+                        SecretId=secret_name,
+                        ForceDeleteWithoutRecovery=True
+                    )
+                except Exception:
+                    pass  # Best-effort cleanup
         except Exception:
             pass
     
@@ -563,7 +798,7 @@ def security_stats():
     pass_rate = (safe_files / total_files * 100) if total_files > 0 else 0
     
     # Layer stats
-    layer_names = ['Hash Check', 'ZIP Validation', 'ClamAV Scan', 'Sandbox Analysis']
+    layer_names = ['SHA-256 + VirusTotal', 'ZIP Heuristic Analysis', 'ClamAV (Docker)', 'Sandbox (Docker)']
     layer_stats = []
     for name in layer_names:
         passed = PipelineStage.query.join(File).filter(
@@ -622,4 +857,4 @@ def missing_token(error):
 
 
 if __name__ == '__main__':
-    app.run(debug=True, use_reloader=False, port=5000)
+    app.run(host='0.0.0.0', debug=True, use_reloader=False, port=5000)

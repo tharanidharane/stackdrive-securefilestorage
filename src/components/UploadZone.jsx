@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
-import { UploadCloud, Lock, AlertCircle } from 'lucide-react';
+import { UploadCloud, Lock, AlertCircle, Zap, CheckCircle2 } from 'lucide-react';
 import './UploadZone.css';
 
 export default function UploadZone({ onUpload, disabled = false, useApi = false }) {
@@ -9,7 +9,10 @@ export default function UploadZone({ onUpload, disabled = false, useApi = false 
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
   const [fileName, setFileName] = useState('');
+  const [uploadPhase, setUploadPhase] = useState(''); // 'preparing' | 'uploading' | 'finalizing'
+  const [uploadSpeed, setUploadSpeed] = useState('');
   const fileInputRef = useRef(null);
+  const speedTracker = useRef({ startTime: 0, lastTime: 0, lastLoaded: 0 });
 
   const handleDragOver = useCallback((e) => {
     e.preventDefault();
@@ -20,6 +23,23 @@ export default function UploadZone({ onUpload, disabled = false, useApi = false 
     e.preventDefault();
     setDragOver(false);
   }, []);
+
+  const formatSpeed = (bytesPerSecond) => {
+    if (bytesPerSecond < 1024) return `${bytesPerSecond.toFixed(0)} B/s`;
+    const kb = bytesPerSecond / 1024;
+    if (kb < 1024) return `${kb.toFixed(1)} KB/s`;
+    const mb = kb / 1024;
+    return `${mb.toFixed(1)} MB/s`;
+  };
+
+  const formatSize = (bytes) => {
+    if (bytes < 1024) return `${bytes} B`;
+    const kb = bytes / 1024;
+    if (kb < 1024) return `${kb.toFixed(1)} KB`;
+    const mb = kb / 1024;
+    if (mb < 1024) return `${mb.toFixed(1)} MB`;
+    return `${(mb / 1024).toFixed(1)} GB`;
+  };
 
   const validateFile = (file) => {
     if (!file.name.endsWith('.zip')) {
@@ -40,25 +60,52 @@ export default function UploadZone({ onUpload, disabled = false, useApi = false 
     setFileName(file.name);
     setProgress(0);
     setError('');
+    setUploadPhase('preparing');
+    setUploadSpeed('');
+    speedTracker.current = { startTime: Date.now(), lastTime: Date.now(), lastLoaded: 0 };
 
     if (useApi) {
-      // Real API upload with XHR progress
+      // Real API multipart upload with progress
       try {
-        await onUpload(file, (pct) => setProgress(pct));
+        setUploadPhase('uploading');
+        await onUpload(file, (pct) => {
+          setProgress(pct);
+
+          // Calculate upload speed
+          const now = Date.now();
+          const elapsed = (now - speedTracker.current.lastTime) / 1000;
+          if (elapsed >= 0.5) { // Update speed every 500ms
+            const loaded = (pct / 100) * file.size;
+            const bytesPerSecond = (loaded - speedTracker.current.lastLoaded) / elapsed;
+            if (bytesPerSecond > 0) {
+              setUploadSpeed(formatSpeed(bytesPerSecond));
+            }
+            speedTracker.current.lastTime = now;
+            speedTracker.current.lastLoaded = loaded;
+          }
+
+          if (pct >= 99) {
+            setUploadPhase('finalizing');
+          }
+        });
         setProgress(100);
+        setUploadPhase('');
         setSuccess(true);
         setTimeout(() => {
           setSuccess(false);
           setUploading(false);
           setProgress(0);
           setFileName('');
+          setUploadSpeed('');
         }, 1000);
       } catch (err) {
         setError(err.message || 'Upload failed');
-        setTimeout(() => setError(''), 3000);
+        setUploadPhase('');
+        setTimeout(() => setError(''), 5000);
         setUploading(false);
         setProgress(0);
         setFileName('');
+        setUploadSpeed('');
       }
     } else {
       // Simulated (fallback)
@@ -109,6 +156,15 @@ export default function UploadZone({ onUpload, disabled = false, useApi = false 
     e.target.value = '';
   };
 
+  const getPhaseLabel = () => {
+    switch (uploadPhase) {
+      case 'preparing': return 'Preparing multipart upload...';
+      case 'uploading': return uploadSpeed ? `Uploading at ${uploadSpeed}` : 'Uploading chunks to S3...';
+      case 'finalizing': return 'Assembling in quarantine zone...';
+      default: return '';
+    }
+  };
+
   return (
     <div
       className={`upload-zone ${dragOver ? 'upload-zone--dragover' : ''} ${uploading ? 'upload-zone--uploading' : ''} ${error ? 'upload-zone--error' : ''} ${success ? 'upload-zone--success' : ''} ${disabled ? 'upload-zone--disabled' : ''}`}
@@ -136,11 +192,23 @@ export default function UploadZone({ onUpload, disabled = false, useApi = false 
         </div>
       ) : uploading ? (
         <div className="upload-zone__content">
-          <p className="upload-zone__filename">{fileName}</p>
+          <div className="upload-zone__upload-header">
+            {uploadPhase === 'finalizing' ? (
+              <CheckCircle2 size={20} className="upload-zone__phase-icon upload-zone__phase-icon--finalizing" />
+            ) : (
+              <Zap size={20} className="upload-zone__phase-icon upload-zone__phase-icon--streaming" />
+            )}
+            <p className="upload-zone__filename">{fileName}</p>
+          </div>
           <div className="upload-zone__progress-bar">
             <div className="upload-zone__progress-fill" style={{ width: `${progress}%` }} />
           </div>
-          <span className="upload-zone__progress-text">{Math.round(progress)}% uploaded</span>
+          <div className="upload-zone__progress-info">
+            <span className="upload-zone__progress-text">{Math.round(progress)}% uploaded</span>
+            {uploadPhase && (
+              <span className="upload-zone__phase-text">{getPhaseLabel()}</span>
+            )}
+          </div>
         </div>
       ) : (
         <div className="upload-zone__content">
@@ -149,6 +217,9 @@ export default function UploadZone({ onUpload, disabled = false, useApi = false 
             Drag & drop your ZIP file here
           </p>
           <span className="upload-zone__hint">or click to browse · Max 500MB · ZIP only</span>
+          <span className="upload-zone__hint upload-zone__hint--speed">
+            <Zap size={12} /> Direct-to-S3 multipart upload · Parallel chunks
+          </span>
         </div>
       )}
 

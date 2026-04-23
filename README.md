@@ -1,16 +1,97 @@
-# React + Vite
+# 🛡️ StackDrive
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+<br/>
 
-Currently, two official plugins are available:
+> **Secure Cloud File Ingestion Gateway**
+> *AI-Driven Secure Upload with Quantum-Resistant Encryption*
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+StackDrive is a next-generation web-based secure cloud file ingestion gateway designed for zero-trust environments. By implementing a multi-layer automated security pipeline and post-quantum cryptography, StackDrive ensures complete data integrity and confidentiality *before* any file touches your permanent cloud storage.
 
-## React Compiler
+---
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## 🚀 Key Features
 
-## Expanding the ESLint configuration
+*   **Zero-Trust Architecture**
+    No file is automatically trusted. All uploads are initially confined to an isolated quarantine AWS S3 bucket.
+*   **4-Layer Defense Pipeline**
+    *   *Hash Compilation*: Matches uploaded files against known malware signatures.
+    *   *ZIP Validation*: Prevents recursive ZIP bombs and malicious hidden executables.
+    *   *Antivirus Engine*: Powered by ClamAV for widespread threat neutralization.
+    *   *Zero-Day Sandbox*: Isolated Docker-based execution to analyze behavioral heuristics.
+*   **Quantum-Safe Protocol**
+    Fully encrypts validated files using robust AES-256 paired with AWS KMS key management, wrapped in the NIST-standardized Post-Quantum Cryptography algorithms (ML-KEM/Kyber & ML-DSA/Dilithium).
+*   **Real-Time Threat Notifications**
+    Instant SMTP-based automated email alerts dynamically dispatch when security triggers are tripped.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## 🏗️ System Architecture
+
+*   **Frontend**: A sleek, responsive dashboard built strictly on **React.js** powered by **Vite** and styled with **Tailwind CSS**.
+*   **Backend**: A high-efficiency **Python (Flask)** REST API orchestrating the file ingestion, security, and AWS resource routing.
+*   **Infrastructure**: Deeply integrated AWS workflows (**S3, IAM, KMS, STS**) abstract away complex credentials, granting purely secure, user-managed ephemeral sessions.
+
+## 🛠️ Technology Stack
+
+| Pillar | Core Services |
+| :--- | :--- |
+| **Frontend** | React 19, Vite, Tailwind CSS, Lucide Icons |
+| **Backend** | Python 3.12, Flask, JWT Auth, SQLite |
+| **Crypto & Security** | AES-256, PyCryptodome, `liboqs` (PQC), ClamAV |
+| **Cloud Architecture** | AWS S3, AWS KMS, AWS IAM |
+| **Test & Container** | Docker (for Sandbox execution) |
+
+## 📦 Setting Up the Gateway Locally
+
+### Prerequisites
+*   Node.js (`v18` or newer)
+*   Python (`3.11` or newer)
+*   Docker (Daemon must be running for advanced sandbox behavior tests)
+*   Valid AWS Identity with CLI provisioning.
+
+### 1. Backend Server Setup
+Start by getting the Python environment operational.
+
+```bash
+cd backend
+python -m venv venv
+# On Windows:
+.\venv\Scripts\activate
+# On macOS/Linux:
+source venv/bin/activate
+
+# Install the Python dependencies
+pip install -r requirements.txt
+```
+
+> **Note**: Custom algorithms like ML-KEM/ML-DSA might require compiling `liboqs-python` via source or a tailored binary due to post-quantum nature requirements.
+
+Start the API:
+```bash
+python app.py
+```
+
+### 2. Frontend Dashboard Setup
+In a new terminal window inside the root `stackdrive` directory:
+
+```bash
+# Install NPM packages
+npm install
+
+# Start the Vite development server
+npm run dev
+```
+
+Navigate to `http://localhost:5173` to access the dashboard!
+
+## 👥 Hackathon Team
+
+Developed at Sri Manakula Vinayagar Engineering College.
+
+*   **Tharanidharane V** (Leader)
+*   **Yokeshwaran A**
+*   **Vignesh P**
+*   **Venkateshwaran S**
+
+*Guided by Prof. R. Suresh*
+
+---
+*StackDrive: Because your data shouldn't be trusted until it's verified.*

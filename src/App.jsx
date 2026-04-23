@@ -52,7 +52,7 @@ function AuthenticatedApp({ user, setUser, onLogout }) {
         onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
       <div className={`main-wrapper ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
-        <HeaderWithTitle unreadCount={unreadCount} email={user?.email} />
+        <HeaderWithTitle unreadCount={unreadCount} email={user?.email} onMarkAllRead={() => setUnreadCount(0)} />
         <div className="main-content">
           <Routes>
             <Route path="/overview" element={<Dashboard user={user} />} />
@@ -74,11 +74,11 @@ function AuthenticatedApp({ user, setUser, onLogout }) {
   );
 }
 
-function HeaderWithTitle({ unreadCount, email }) {
+function HeaderWithTitle({ unreadCount, email, onMarkAllRead }) {
   const location = useLocation();
   const pageInfo = pageTitles[location.pathname] || { title: 'StackDrive', subtitle: '' };
   return <Header title={pageInfo.title} subtitle={pageInfo.subtitle}
-                 unreadCount={unreadCount} email={email} />;
+                 unreadCount={unreadCount} email={email} onMarkAllRead={onMarkAllRead} />;
 }
 
 function AppContent() {

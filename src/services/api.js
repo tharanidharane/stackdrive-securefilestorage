@@ -1,9 +1,19 @@
 /**
  * StackDrive API Service
  * Handles all communication with the Flask backend
+ * 
+ * Upload strategy: S3 Presigned Multipart Upload
+ * - Files are uploaded directly from the browser to S3 in parallel chunks
+ * - This bypasses the Flask server completely for the data transfer
+ * - 500MB files upload in seconds instead of minutes
  */
 
 const API_BASE = 'http://localhost:5000/api';
+
+// Upload configuration
+const MAX_CONCURRENT_CHUNKS = 6;   // Max parallel chunk uploads (browser limit per domain)
+const MAX_RETRY_ATTEMPTS = 3;      // Retry failed chunks up to 3 times
+const RETRY_DELAY_MS = 1000;       // Base retry delay (exponential backoff)
 
 class ApiService {
   constructor() {
@@ -95,40 +105,179 @@ class ApiService {
     return this.request('/aws/disconnect', { method: 'POST' });
   }
 
-  // ── Upload ────────────────────────────
+  // ── Upload (Presigned Multipart — Direct to S3) ────────────
+  /**
+   * Upload a file using S3 presigned multipart upload.
+   * 
+   * Flow:
+   *   1. POST /api/upload/initiate → get presigned URLs for each chunk
+   *   2. PUT each chunk directly to S3 via presigned URLs (parallel, up to 6 at a time)
+   *   3. POST /api/upload/complete → assemble chunks in S3, start pipeline
+   * 
+   * @param {File} file - The file to upload
+   * @param {Function} onProgress - Progress callback (0-100)
+   * @returns {Promise<Object>} - Upload result with file record
+   */
   async uploadFile(file, onProgress) {
-    const formData = new FormData();
-    formData.append('file', file);
+    // ── Step 1: Initiate multipart upload ──
+    const initData = await this.request('/upload/initiate', {
+      method: 'POST',
+      body: JSON.stringify({
+        fileName: file.name,
+        fileSize: file.size,
+      }),
+    });
 
-    const url = `${API_BASE}/upload`;
-    const token = this.getToken();
+    const { uploadId, fileId, s3Key, chunkSize, totalParts, presignedUrls } = initData;
 
+    try {
+      // ── Step 2: Upload chunks directly to S3 in parallel ──
+      const parts = await this._uploadChunksParallel(
+        file, presignedUrls, chunkSize, totalParts, onProgress
+      );
+
+      // ── Step 3: Complete multipart upload ──
+      const completeData = await this.request('/upload/complete', {
+        method: 'POST',
+        body: JSON.stringify({
+          uploadId,
+          fileId,
+          s3Key,
+          parts,
+        }),
+      });
+
+      return completeData;
+
+    } catch (err) {
+      // Abort multipart upload on failure to clean up S3 parts
+      try {
+        await this.request('/upload/abort', {
+          method: 'POST',
+          body: JSON.stringify({ uploadId, fileId, s3Key }),
+        });
+      } catch {
+        // Ignore abort errors
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Upload file chunks in parallel with concurrency control.
+   * Uses a pool of MAX_CONCURRENT_CHUNKS workers for maximum throughput.
+   */
+  async _uploadChunksParallel(file, presignedUrls, chunkSize, totalParts, onProgress) {
+    const parts = new Array(totalParts);
+    const chunkProgress = new Array(totalParts).fill(0);
+    let completedChunks = 0;
+
+    const updateTotalProgress = () => {
+      // Weighted progress: each chunk contributes proportionally
+      const totalLoaded = chunkProgress.reduce((sum, p, i) => {
+        const start = i * chunkSize;
+        const end = Math.min(start + chunkSize, file.size);
+        const thisChunkSize = end - start;
+        return sum + (p / 100) * thisChunkSize;
+      }, 0);
+      const pct = Math.round((totalLoaded / file.size) * 100);
+      if (onProgress) onProgress(Math.min(pct, 99)); // Cap at 99 until complete
+    };
+
+    // Worker function that processes one chunk
+    const uploadChunk = async (partIndex) => {
+      const partNumber = partIndex + 1;
+      const start = partIndex * chunkSize;
+      const end = Math.min(start + chunkSize, file.size);
+      const blob = file.slice(start, end);
+      const url = presignedUrls[partIndex];
+
+      // Retry loop with exponential backoff
+      for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
+        try {
+          const etag = await this._uploadSingleChunk(url, blob, (pct) => {
+            chunkProgress[partIndex] = pct;
+            updateTotalProgress();
+          });
+
+          parts[partIndex] = { PartNumber: partNumber, ETag: etag };
+          completedChunks++;
+          return;
+
+        } catch (err) {
+          if (attempt < MAX_RETRY_ATTEMPTS - 1) {
+            // Exponential backoff: 1s, 2s, 4s
+            const delay = RETRY_DELAY_MS * Math.pow(2, attempt);
+            await new Promise(r => setTimeout(r, delay));
+            chunkProgress[partIndex] = 0; // Reset progress for retry
+          } else {
+            throw new ApiError(
+              `Chunk ${partNumber}/${totalParts} failed after ${MAX_RETRY_ATTEMPTS} attempts: ${err.message}`,
+              0
+            );
+          }
+        }
+      }
+    };
+
+    // Concurrency-limited execution pool
+    const queue = Array.from({ length: totalParts }, (_, i) => i);
+    const workers = [];
+
+    const runWorker = async () => {
+      while (queue.length > 0) {
+        const idx = queue.shift();
+        await uploadChunk(idx);
+      }
+    };
+
+    // Spawn workers up to concurrency limit
+    const workerCount = Math.min(MAX_CONCURRENT_CHUNKS, totalParts);
+    for (let i = 0; i < workerCount; i++) {
+      workers.push(runWorker());
+    }
+
+    await Promise.all(workers);
+
+    if (onProgress) onProgress(100);
+    return parts;
+  }
+
+  /**
+   * Upload a single chunk via presigned PUT URL.
+   * Returns the ETag from S3 (required for multipart completion).
+   */
+  _uploadSingleChunk(presignedUrl, blob, onChunkProgress) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', url);
-      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      xhr.open('PUT', presignedUrl);
 
       xhr.upload.addEventListener('progress', (e) => {
-        if (e.lengthComputable && onProgress) {
-          onProgress(Math.round((e.loaded / e.total) * 100));
+        if (e.lengthComputable && onChunkProgress) {
+          onChunkProgress(Math.round((e.loaded / e.total) * 100));
         }
       });
 
       xhr.addEventListener('load', () => {
-        try {
-          const data = JSON.parse(xhr.responseText);
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve(data);
-          } else {
-            reject(new ApiError(data.error || 'Upload failed', xhr.status));
+        if (xhr.status >= 200 && xhr.status < 300) {
+          // S3 returns ETag in response header
+          const etag = xhr.getResponseHeader('ETag');
+          if (!etag) {
+            reject(new Error('S3 did not return ETag header'));
+            return;
           }
-        } catch {
-          reject(new ApiError('Upload failed', xhr.status));
+          resolve(etag);
+        } else {
+          reject(new Error(`S3 PUT failed with status ${xhr.status}`));
         }
       });
 
-      xhr.addEventListener('error', () => reject(new ApiError('Network error', 0)));
-      xhr.send(formData);
+      xhr.addEventListener('error', () => reject(new Error('Network error during chunk upload')));
+      xhr.addEventListener('timeout', () => reject(new Error('Chunk upload timed out')));
+
+      // 5 minute timeout per chunk (generous for large chunks on slow connections)
+      xhr.timeout = 5 * 60 * 1000;
+      xhr.send(blob);
     });
   }
 

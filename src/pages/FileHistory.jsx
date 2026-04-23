@@ -202,6 +202,40 @@ export default function FileHistory() {
                     }`}>{stage.status.toUpperCase()}</span>
                   </div>
                 ))}
+                {selectedFile.sandbox && (
+                  <>
+                    <div className="file-detail__separator" />
+                    <h4 className="file-detail__section-title">Sandbox Intelligence</h4>
+                    <div className="file-detail__row">
+                      <span className="file-detail__label">Execution State</span>
+                      <span className="file-detail__value mono text-muted">{selectedFile.sandbox.statusDetail}</span>
+                    </div>
+                    {selectedFile.sandbox.entropy !== null && (
+                      <div className="file-detail__row">
+                        <span className="file-detail__label">Heuristic Entropy</span>
+                        <span className="file-detail__value mono">{selectedFile.sandbox.entropy.toFixed(4)}</span>
+                      </div>
+                    )}
+                    {selectedFile.sandbox.flags && selectedFile.sandbox.flags.length > 0 && (
+                      <div className="file-detail__row" style={{ alignItems: 'flex-start' }}>
+                        <span className="file-detail__label">Threat Indicators</span>
+                        <div className="file-detail__value">
+                          <ul style={{ margin: 0, paddingLeft: '1rem', color: 'var(--color-threat)', fontSize: '0.85rem' }}>
+                            {selectedFile.sandbox.flags.map((f, i) => <li key={i}>{f}</li>)}
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+                    {selectedFile.sandbox.traceLog && (
+                      <div style={{ marginTop: '1rem' }}>
+                        <span className="file-detail__label" style={{ display: 'block', marginBottom: '0.5rem' }}>Execution Trace Monitor (strace)</span>
+                        <div className="code-block" style={{ maxHeight: '200px', overflowY: 'auto', fontSize: '0.75rem', padding: '0.5rem', background: '#0d1117', border: '1px solid #30363d', borderRadius: '4px' }}>
+                          <pre style={{ margin: 0, color: '#e6edf3', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}><code>{selectedFile.sandbox.traceLog}</code></pre>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
                 {selectedFile.status === 'safe' && (
                   <>
                     <div className="file-detail__separator" />

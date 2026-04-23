@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Zap, Eye, EyeOff, LogIn } from 'lucide-react';
+import { Eye, EyeOff, LogIn } from 'lucide-react';
+import LogoIcon from '../components/LogoIcon';
 import { useToast } from '../components/Toast';
 import api from '../services/api';
 import './AuthPages.css';
@@ -53,7 +54,7 @@ export default function LoginPage({ onLogin }) {
     <div className="auth-layout">
       <div className="auth-card">
         <div className="auth-logo">
-          <div className="logo-icon"><Zap size={20} /></div>
+          <div className="logo-icon"><LogoIcon /></div>
           <span className="logo-text">StackDrive</span>
         </div>
 

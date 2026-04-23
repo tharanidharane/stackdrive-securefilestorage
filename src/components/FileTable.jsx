@@ -51,13 +51,16 @@ export default function FileTable({ files, loading = false, onRowClick, compact 
           {files.map((file, index) => (
             <tr
               key={file.id}
-              className={`file-table__row ${file.status === 'blocked' ? 'file-table__row--blocked' : ''} ${index === 0 && !compact ? 'file-table__row--new' : ''}`}
+              className={`file-table__row ${
+                file.status === 'blocked' ? 'file-table__row--blocked' : 
+                file.status === 'safe' ? 'file-table__row--safe' : ''
+              } ${index === 0 && !compact ? 'file-table__row--new' : ''}`}
               onClick={() => onRowClick?.(file)}
               style={{ cursor: onRowClick ? 'pointer' : 'default' }}
             >
               <td className="file-table__name">{file.name}</td>
               <td className="file-table__size">{file.size} {file.sizeUnit || 'MB'}</td>
-              <td className="file-table__time" title={typeof file.uploadedAt === 'string' ? file.uploadedAt : file.uploadedAt?.toISOString?.()}>
+              <td className="file-table__time" title={new Date(file.uploadedAt).toLocaleString()}>
                 {getRelativeTime(file.uploadedAt)}
               </td>
               <td>

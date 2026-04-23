@@ -35,6 +35,12 @@
   gap: var(--space-5);
 }
 
+.header__bell-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
 .header__bell {
   position: relative;
   background: none;
@@ -49,7 +55,7 @@
   justify-content: center;
 }
 
-.header__bell:hover {
+.header__bell:hover, .header__bell.active {
   color: var(--text-primary);
   background: var(--bg-elevated);
 }

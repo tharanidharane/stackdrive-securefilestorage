@@ -1,9 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ShieldCheck, ShieldX, ScanLine, Clock } from 'lucide-react';
 import StatCard from '../components/StatCard';
-import UploadZone from '../components/UploadZone';
 import FileTable from '../components/FileTable';
-import PipelinePanel from '../components/PipelinePanel';
 import Modal from '../components/Modal';
 import StatusBadge from '../components/StatusBadge';
 import { useToast } from '../components/Toast';
@@ -16,10 +14,7 @@ export default function Dashboard({ user }) {
   const [loading, setLoading] = useState(true);
   const [selectedFile, setSelectedFile] = useState(null);
   const [showDetail, setShowDetail] = useState(false);
-  const [pipelineActive, setPipelineActive] = useState(false);
-  const [pipelineData, setPipelineData] = useState({ stages: [], fileName: '', result: null, showBanner: false });
   const { addToast } = useToast();
-  const pollingRef = useRef(null);
 
   const awsConnected = user?.aws_connected !== false;
 
@@ -45,69 +40,6 @@ export default function Dashboard({ user }) {
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
   }, [fetchData]);
-
-  // Poll pipeline status for a file
-  const pollPipeline = useCallback(async (fileId, fileName) => {
-    setPipelineActive(true);
-    setPipelineData({ stages: [], fileName, result: null, showBanner: false, isActive: true });
-
-    const poll = async () => {
-      try {
-        const data = await api.getPipeline(fileId);
-        const stages = data.stages || [];
-        const fileStatus = data.status;
-        const isComplete = fileStatus === 'safe' || fileStatus === 'blocked';
-        const result = fileStatus === 'safe' ? 'safe' : fileStatus === 'blocked' ? 'blocked' : null;
-
-        setPipelineData({
-          stages,
-          fileName,
-          result,
-          showBanner: isComplete,
-          isActive: true,
-        });
-
-        if (isComplete) {
-          clearInterval(pollingRef.current);
-          pollingRef.current = null;
-          fetchData(); // Refresh dashboard
-
-          if (fileStatus === 'safe') {
-            addToast(`${fileName} verified and stored securely`, 'success');
-          } else {
-            addToast(`Threat blocked in ${fileName}`, 'error');
-          }
-
-          // Auto-hide pipeline after 6s
-          setTimeout(() => setPipelineActive(false), 6000);
-        }
-      } catch (err) {
-        // Keep polling
-      }
-    };
-
-    // Initial check
-    await poll();
-    pollingRef.current = setInterval(poll, 1500);
-    return () => {
-      if (pollingRef.current) clearInterval(pollingRef.current);
-    };
-  }, [fetchData, addToast]);
-
-  const handleUpload = useCallback(async (file, progressCallback) => {
-    try {
-      const data = await api.uploadFile(file, progressCallback);
-      addToast(`${file.name} uploaded to quarantine`, 'info');
-      fetchData();
-
-      // Start polling pipeline
-      if (data.file?.id) {
-        pollPipeline(data.file.id, file.name);
-      }
-    } catch (err) {
-      addToast(err.message || 'Upload failed', 'error');
-    }
-  }, [addToast, fetchData, pollPipeline]);
 
   const handleRowClick = async (file) => {
     try {
@@ -170,13 +102,8 @@ export default function Dashboard({ user }) {
           />
         </div>
 
-        {/* Upload Zone */}
-        <div className="stagger-2">
-          <UploadZone onUpload={handleUpload} disabled={!awsConnected} useApi={true} />
-        </div>
-
         {/* Recent File History */}
-        <div className="stagger-3">
+        <div className="stagger-2">
           <h2 className="section-title" style={{ marginTop: 'var(--space-8)' }}>Recent Files</h2>
           <FileTable
             files={files.slice(0, 7)}
@@ -185,13 +112,6 @@ export default function Dashboard({ user }) {
           />
         </div>
       </div>
-
-      {/* Right Pipeline Panel */}
-      {pipelineActive && (
-        <div className="right-panel">
-          <PipelinePanel {...pipelineData} />
-        </div>
-      )}
 
       {/* File Detail Modal */}
       <Modal

@@ -2,6 +2,20 @@ flask==3.1.0
 flask-cors==5.0.1
 flask-sqlalchemy==3.1.1
 flask-jwt-extended==4.7.1
+flask-mail==0.10.0
 bcrypt==4.3.0
 python-dotenv==1.1.0
 werkzeug==3.1.3
+boto3==1.36.14
+requests==2.32.3
+pycryptodome==3.21.0
+pyclamd==1.0.2
+
+# ── Post-Quantum Cryptography (PQC) ──
+# liboqs-python must be installed from source (NOT available on PyPI)
+# Requires: Linux/WSL, CMake, GCC/Clang
+# Install:
+#   git clone --depth=1 https://github.com/open-quantum-safe/liboqs-python
+#   cd liboqs-python && pip install .
+# Provides: ML-KEM-768 (Kyber), ML-DSA-65 (Dilithium)
+# Enable via .env: PQC_ENABLED=true

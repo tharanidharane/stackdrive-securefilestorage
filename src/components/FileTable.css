@@ -32,8 +32,8 @@
 
 .file-table__row {
   border-bottom: 1px solid var(--bg-border);
-  transition: background var(--transition-base);
-  border-left: 2px solid transparent;
+  transition: all var(--transition-base);
+  border-left: 4px solid transparent;
 }
 
 .file-table__row:last-child {
@@ -46,6 +46,10 @@
 
 .file-table__row--blocked {
   border-left-color: var(--color-threat);
+}
+
+.file-table__row--safe {
+  border-left-color: var(--color-safe);
 }
 
 .file-table__row--new {

@@ -3,10 +3,10 @@ import StatusBadge from './StatusBadge';
 import './PipelinePanel.css';
 
 const stageIcons = {
-  'Hash Check': Fingerprint,
-  'ZIP Validation': Archive,
-  'ClamAV Scan': Bug,
-  'Sandbox Analysis': Box,
+  'SHA-256 + VirusTotal': Fingerprint,
+  'ZIP Heuristic Analysis': Archive,
+  'ClamAV (Docker)': Bug,
+  'Sandbox (Docker)': Box,
   'Encryption': Lock,
 };
 

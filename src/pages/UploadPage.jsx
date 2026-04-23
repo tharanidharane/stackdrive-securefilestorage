@@ -49,6 +49,15 @@ export default function UploadPage({ user }) {
     pollingRef.current = setInterval(poll, 1500);
   }, [addToast]);
 
+  const formatFileSize = (bytes) => {
+    if (bytes < 1024) return `${bytes} B`;
+    const kb = bytes / 1024;
+    if (kb < 1024) return `${kb.toFixed(1)} KB`;
+    const mb = kb / 1024;
+    if (mb < 1024) return `${mb.toFixed(1)} MB`;
+    return `${(mb / 1024).toFixed(1)} GB`;
+  };
+
   const handleUpload = useCallback(async (file, progressCallback) => {
     try {
       const data = await api.uploadFile(file, progressCallback);
@@ -56,7 +65,7 @@ export default function UploadPage({ user }) {
         id: Date.now(),
         fileId: data.file?.id,
         name: file.name,
-        size: (file.size / (1024 * 1024)).toFixed(1),
+        size: formatFileSize(file.size),
         time: new Date().toLocaleTimeString(),
         status: 'scanning',
       };
@@ -112,7 +121,7 @@ export default function UploadPage({ user }) {
                 {recentUploads.map(upload => (
                   <div key={upload.id} className="recent-upload-item">
                     <span className="recent-upload-name mono">{upload.name}</span>
-                    <span className="recent-upload-size">{upload.size} MB</span>
+                    <span className="recent-upload-size">{upload.size}</span>
                     <span className="recent-upload-time">{upload.time}</span>
                     <span className={`recent-upload-status ${
                       upload.status === 'safe' ? 'text-safe' :

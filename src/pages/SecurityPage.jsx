@@ -20,10 +20,10 @@ function SecurityStatCard({ label, value, icon: Icon, color, suffix = '' }) {
 }
 
 const layerIcons = {
-  'Hash Check': Fingerprint,
-  'ZIP Validation': Archive,
-  'ClamAV Scan': Bug,
-  'Sandbox Analysis': Box,
+  'SHA-256 + VirusTotal': Fingerprint,
+  'ZIP Heuristic Analysis': Archive,
+  'ClamAV (Docker)': Bug,
+  'Sandbox (Docker)': Box,
 };
 
 function getRelativeTime(isoStr) {
@@ -150,29 +150,29 @@ export default function SecurityPage() {
             <div className="pipeline-desc-card__icon" style={{ color: 'var(--color-pass)' }}>
               <Fingerprint size={24} />
             </div>
-            <h4>Layer 1 — Hash Detection</h4>
-            <p>Computes SHA-256 hash and compares against known malware signature databases. Rapid first-pass detection for catalogued threats.</p>
+            <h4>Layer 1 — SHA-256 + VirusTotal</h4>
+            <p>Computes SHA-256 hash and queries VirusTotal threat intelligence API. Checks against 70+ antivirus engines with result caching and rate limit handling.</p>
           </div>
           <div className="pipeline-desc-card">
             <div className="pipeline-desc-card__icon" style={{ color: 'var(--color-scan)' }}>
               <Archive size={24} />
             </div>
-            <h4>Layer 2 — ZIP Validation</h4>
-            <p>Analyzes internal archive structure. Detects ZIP bombs, hidden executables, corrupted headers, and nested ZIP attacks without extraction.</p>
+            <h4>Layer 2 — ZIP Heuristic Analysis</h4>
+            <p>Deep archive heuristic scan. Detects ZIP bombs, path traversal attacks, hidden files, obfuscated filenames, nested archives, excessive file counts, and dangerous executables.</p>
           </div>
           <div className="pipeline-desc-card">
             <div className="pipeline-desc-card__icon" style={{ color: 'var(--color-queue)' }}>
               <Bug size={24} />
             </div>
-            <h4>Layer 3 — ClamAV Scan</h4>
-            <p>Deep antivirus scan using ClamAV engine with up-to-date signature databases. Detects viruses, trojans, worms, and malicious scripts.</p>
+            <h4>Layer 3 — ClamAV (Docker)</h4>
+            <p>Signature-based antivirus scan via a persistent ClamAV (clamd) container. Real-time scanning over TCP socket with single-second latency.</p>
           </div>
           <div className="pipeline-desc-card">
             <div className="pipeline-desc-card__icon" style={{ color: 'var(--color-threat)' }}>
               <Box size={24} />
             </div>
-            <h4>Layer 4 — Sandbox Analysis</h4>
-            <p>Executes file in isolated Docker container. Monitors file system access, network connections, and process spawning. Catches zero-day threats.</p>
+            <h4>Layer 4 — Sandbox (Docker)</h4>
+            <p>Behavioral analysis in a fully isolated ephemeral container. Monitors syscalls via strace, computes entropy, scans for suspicious strings, and applies heuristic risk scoring.</p>
           </div>
         </div>
       </div>

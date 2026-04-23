@@ -26,7 +26,7 @@ class User(db.Model):
         return {
             'id': self.id,
             'email': self.email,
-            'created_at': self.created_at.isoformat(),
+            'created_at': self.created_at.isoformat() + 'Z',
             'aws_connected': self.aws_connected,
             'aws_account_id': self.aws_account_id,
             'aws_region': self.aws_region,
@@ -48,24 +48,70 @@ class File(db.Model):
     risk = db.Column(db.Integer, nullable=True)
     checks = db.Column(db.String(100), default='Awaiting scan')
     sha256_hash = db.Column(db.String(64), nullable=True)
-    storage_path = db.Column(db.String(500), nullable=True)
+    storage_path = db.Column(db.String(500), nullable=True)  # Clean S3 path (no keys!)
+
+    # ── Encryption Metadata (Zero-Trust: NO plaintext keys ever stored) ──
+    encryption_version = db.Column(db.Integer, default=2)     # 2=PQC+KMS production (No legacy fallback)
+    kms_encrypted_key = db.Column(db.LargeBinary, nullable=True)   # KMS-encrypted AES-256 key blob
+    aes_nonce = db.Column(db.LargeBinary, nullable=True)           # AES-GCM nonce (16 bytes)
+    aes_tag = db.Column(db.LargeBinary, nullable=True)             # AES-GCM auth tag (16 bytes)
+    kem_ciphertext = db.Column(db.LargeBinary, nullable=True)      # ML-KEM-768 encapsulated key
+    kem_public_key = db.Column(db.LargeBinary, nullable=True)      # ML-KEM-768 public key
+    dsa_signature = db.Column(db.LargeBinary, nullable=True)       # ML-DSA-65 signature
+    dsa_public_key = db.Column(db.LargeBinary, nullable=True)      # ML-DSA-65 public key
+    secrets_manager_arn = db.Column(db.String(500), nullable=True)  # ARN for PQC private keys
+
+    # ── Sandbox Analysis Metadata ──
+    sandbox_trace_log = db.Column(db.Text, nullable=True)           # Truncated strace output
+    sandbox_entropy = db.Column(db.Float, nullable=True)            # Computed file entropy
+    sandbox_flags = db.Column(db.Text, nullable=True)               # JSON-encoded array of threat flags
+    sandbox_risk_score = db.Column(db.Integer, nullable=True)       # Heuristic risk score (normalized 0-100)
+    sandbox_status_detail = db.Column(db.String(50), nullable=True) # E.g., normal_exit, timeout, oom_killed
 
     pipeline_stages = db.relationship('PipelineStage', backref='file', lazy='dynamic',
                                        order_by='PipelineStage.stage_order')
 
     def to_dict(self):
         stages = [s.to_dict() for s in self.pipeline_stages.all()]
+        
+        # Calculate size and unit dynamically
+        if self.size < 1024:
+            size_val = self.size
+            unit = 'B'
+        elif self.size < 1024 * 1024:
+            size_val = round(self.size / 1024, 1)
+            unit = 'KB'
+        elif self.size < 1024 * 1024 * 1024:
+            size_val = round(self.size / (1024 * 1024), 1)
+            unit = 'MB'
+        else:
+            size_val = round(self.size / (1024 * 1024 * 1024), 1)
+            unit = 'GB'
+
+        try:
+            import json
+            flags_list = json.loads(self.sandbox_flags) if self.sandbox_flags else []
+        except:
+            flags_list = []
+
         return {
             'id': self.id,
             'name': self.name,
-            'size': round(self.size / (1024 * 1024), 1),
-            'sizeUnit': 'MB',
-            'uploadedAt': self.uploaded_at.isoformat(),
+            'size': size_val,
+            'sizeUnit': unit,
+            'uploadedAt': self.uploaded_at.isoformat() + 'Z',
             'status': self.status,
             'risk': self.risk,
             'checks': self.checks,
             'sha256': self.sha256_hash,
             'pipelineStages': stages,
+            'sandbox': {
+                'traceLog': self.sandbox_trace_log,
+                'entropy': self.sandbox_entropy,
+                'flags': flags_list,
+                'riskScore': self.sandbox_risk_score,
+                'statusDetail': self.sandbox_status_detail,
+            } if self.sandbox_status_detail else None
         }
 
 
@@ -103,7 +149,7 @@ class Notification(db.Model):
         return {
             'id': self.id,
             'fileName': self.file_name,
-            'detectedAt': self.detected_at.isoformat(),
+            'detectedAt': self.detected_at.isoformat() + 'Z',
             'layer': self.layer,
             'threatType': self.threat_type,
             'action': self.action,

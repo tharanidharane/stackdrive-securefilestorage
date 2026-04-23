@@ -81,35 +81,116 @@
   color: var(--text-muted);
 }
 
+.upload-zone__hint--speed {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: var(--space-1);
+  color: var(--color-scan);
+  opacity: 0.7;
+  font-weight: 500;
+}
+
+/* ── Upload Header with phase icon ── */
+.upload-zone__upload-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.upload-zone__phase-icon {
+  flex-shrink: 0;
+}
+
+.upload-zone__phase-icon--streaming {
+  color: var(--color-scan);
+  animation: pulseGlow 1.2s ease-in-out infinite;
+}
+
+.upload-zone__phase-icon--finalizing {
+  color: var(--color-safe);
+  animation: pulseGlow 1.5s ease-in-out infinite;
+}
+
+@keyframes pulseGlow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .upload-zone__filename {
   font-family: 'JetBrains Mono', monospace;
   font-size: var(--text-sm);
   color: var(--text-primary);
   font-weight: 500;
-  margin-bottom: var(--space-2);
 }
 
 .upload-zone__progress-bar {
   width: 100%;
-  max-width: 320px;
-  height: 6px;
+  max-width: 360px;
+  height: 8px;
   background: var(--bg-elevated);
   border-radius: var(--radius-full);
   overflow: hidden;
+  position: relative;
 }
 
 .upload-zone__progress-fill {
   height: 100%;
-  background: var(--color-scan);
+  background: linear-gradient(90deg, var(--color-scan), #38bdf8);
   border-radius: var(--radius-full);
-  transition: width 100ms ease;
+  transition: width 150ms ease;
+  position: relative;
+}
+
+.upload-zone__progress-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.15) 50%,
+    transparent 100%
+  );
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* ── Progress info row ── */
+.upload-zone__progress-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 360px;
+  margin-top: var(--space-1);
 }
 
 .upload-zone__progress-text {
   font-size: var(--text-xs);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
-  margin-top: var(--space-1);
+}
+
+.upload-zone__phase-text {
+  font-size: var(--text-xs);
+  color: var(--color-scan);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  animation: fadeInSlide 0.3s ease;
+}
+
+@keyframes fadeInSlide {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .upload-zone__error {

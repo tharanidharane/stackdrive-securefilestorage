@@ -33,7 +33,7 @@ StackDrive is a next-generation web-based secure cloud file ingestion gateway de
 
 | Pillar | Core Services |
 | :--- | :--- |
-| **Frontend** | React 19, Vite, Tailwind CSS, Lucide Icons |
+| **Frontend** | React 19, Vite, Tailwind CSS |
 | **Backend** | Python 3.12, Flask, JWT Auth, SQLite |
 | **Crypto & Security** | AES-256, PyCryptodome, `liboqs` (PQC), ClamAV |
 | **Cloud Architecture** | AWS S3, AWS KMS, AWS IAM |
@@ -81,17 +81,5 @@ npm run dev
 ```
 
 Navigate to `http://localhost:5173` to access the dashboard!
-
-## 👥 Hackathon Team
-
-Developed at Sri Manakula Vinayagar Engineering College.
-
-*   **Tharanidharane V** (Leader)
-*   **Yokeshwaran A**
-*   **Vignesh P**
-*   **Venkateshwaran S**
-
-*Guided by Prof. R. Suresh*
-
 ---
 *StackDrive: Because your data shouldn't be trusted until it's verified.*

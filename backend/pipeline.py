@@ -27,8 +27,75 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# ─── VirusTotal result cache (hash → result dict) ─────────────────
-_vt_cache = {}
+def _get_aws_session(user_obj):
+    """
+    Get a scoped AWS session via STS AssumeRole.
+    Prefers IAM role assumption over stored credentials.
+    Falls back to stored credentials for backward compatibility
+    during migration (log a deprecation warning when fallback used).
+    """
+    import boto3
+
+    # Prefer IAM role assumption (production path)
+    if hasattr(user_obj, 'iam_role_arn') and user_obj.iam_role_arn:
+        sts = boto3.client('sts')
+        assumed = sts.assume_role(
+            RoleArn=user_obj.iam_role_arn,
+            RoleSessionName=f"stackdrive-user-{user_obj.id}",
+            DurationSeconds=900,
+        )
+        creds = assumed['Credentials']
+        return boto3.Session(
+            aws_access_key_id=creds['AccessKeyId'],
+            aws_secret_access_key=creds['SecretAccessKey'],
+            aws_session_token=creds['SessionToken'],
+            region_name=getattr(user_obj, 'aws_region', 'us-east-1'),
+        )
+
+    # Fallback: stored credentials (deprecated — log warning)
+    logger.warning(
+        f"[SECURITY] User {user_obj.id} using stored AWS credentials. "
+        "Migrate to IAM role assumption (iam_role_arn field)."
+    )
+    return boto3.Session(
+        aws_access_key_id=user_obj.aws_access_key,
+        aws_secret_access_key=user_obj.aws_secret_key,
+        region_name=getattr(user_obj, 'aws_region', 'us-east-1'),
+    )
+
+# ─── VirusTotal cache — Redis-backed with TTL ──────────────────────
+# Falls back to in-memory dict if Redis is unavailable (dev/test mode)
+_VT_CACHE_TTL = int(os.environ.get('VT_CACHE_TTL_SECONDS', '21600'))  # 6 hours default
+
+def _vt_cache_get(sha256: str):
+    """Retrieve a cached VT result. Returns dict or None."""
+    redis_url = os.environ.get('REDIS_URL')
+    if redis_url:
+        try:
+            import redis as redis_lib
+            r = redis_lib.Redis.from_url(redis_url, socket_connect_timeout=2)
+            val = r.get(f'stackdrive:vt:{sha256}')
+            if val:
+                import json as _json
+                return _json.loads(val)
+        except Exception as e:
+            logger.warning(f"[VT CACHE] Redis get failed, using miss: {e}")
+    return _vt_memory_cache.get(sha256)  # in-memory fallback
+
+def _vt_cache_set(sha256: str, result: dict):
+    """Store a VT result in cache with TTL."""
+    redis_url = os.environ.get('REDIS_URL')
+    if redis_url:
+        try:
+            import redis as redis_lib, json as _json
+            r = redis_lib.Redis.from_url(redis_url, socket_connect_timeout=2)
+            r.setex(f'stackdrive:vt:{sha256}', _VT_CACHE_TTL, _json.dumps(result))
+            return
+        except Exception as e:
+            logger.warning(f"[VT CACHE] Redis set failed, using memory: {e}")
+    _vt_memory_cache[sha256] = result  # in-memory fallback
+
+_vt_memory_cache = {}  # fallback only — not for production use
 
 # ─── Pipeline stage definitions ───────────────────────────────────
 PIPELINE_STAGES = [
@@ -142,8 +209,8 @@ def run_hash_check(file_obj, filepath):
     update_stage(file_obj.id, 1, 'running', f'Querying VirusTotal for {sha256[:16]}...')
 
     # Step 2: Check cache
-    if sha256 in _vt_cache:
-        result = _vt_cache[sha256]
+    result = _vt_cache_get(sha256)
+    if result is not None:
         logger.info(f"VirusTotal cache hit for {sha256[:16]}")
         return _apply_layer1_result(file_obj, result, sha256)
 
@@ -151,7 +218,7 @@ def run_hash_check(file_obj, filepath):
     vt_api_key = os.environ.get('VT_API_KEY')
     if not vt_api_key:
         result = {"status": "unknown", "message": "VT_API_KEY not configured", "risk": 20}
-        _vt_cache[sha256] = result
+        _vt_cache_set(sha256, result)
         update_stage(file_obj.id, 1, 'pass', 'VirusTotal API key not configured — skipping threat intelligence')
         return True, None, result
 
@@ -226,7 +293,7 @@ def run_hash_check(file_obj, filepath):
         }
 
     # Cache result
-    _vt_cache[sha256] = result
+    _vt_cache_set(sha256, result)
     return _apply_layer1_result(file_obj, result, sha256)
 
 
@@ -279,9 +346,24 @@ def layer2_zip_validation(file_obj, filepath):
 
     # Check if valid ZIP
     if not zipfile.is_zipfile(filepath):
-        result = {"status": "malicious", "message": "Invalid or corrupted archive", "risk": 80}
-        update_stage(file_obj.id, 2, 'fail', result['message'])
-        return False, result['message'], result
+        result = {
+            "status": "safe",
+            "message": "Non-ZIP file — ZIP heuristic layer skipped",
+            "risk": 0
+        }
+        update_stage(file_obj.id, 2, 'pass',
+                     'Non-archive file type — ZIP heuristic checks not applicable')
+        try:
+            import magic
+            mime = magic.from_file(filepath, mime=True)
+            ext  = os.path.splitext(filepath)[1].lower()
+            if ('executable' in mime or 'script' in mime or 'x-dosexec' in mime or 'application/x-msdownload' in mime) and ext not in ['.exe', '.bat', '.sh', '.ps1', '.js', '.vbs', '.cmd', '.msi']:
+                result['status'] = 'suspicious'
+                result['risk'] = 40
+                update_stage(file_obj.id, 2, 'pass', f"⚠ MIME type {mime} does not match benign extension {ext}")
+        except Exception:
+            pass
+        return True, None, result
 
     try:
         with zipfile.ZipFile(filepath, 'r') as zf:
@@ -483,7 +565,6 @@ def _clamd_scan(filepath, host='127.0.0.1', port=3310, timeout=60):
     import socket
 
     abs_path = os.path.abspath(filepath)
-    file_data = open(abs_path, 'rb').read()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(timeout)
@@ -494,15 +575,15 @@ def _clamd_scan(filepath, host='127.0.0.1', port=3310, timeout=60):
         # INSTREAM command: stream file data to clamd
         sock.sendall(b'zINSTREAM\0')
 
-        # Send file in chunks (max 2GB per chunk header)
-        chunk_size = 8192
-        offset = 0
-        while offset < len(file_data):
-            chunk = file_data[offset:offset + chunk_size]
-            # Send chunk length as 4-byte big-endian unsigned int
-            sock.sendall(struct.pack('!I', len(chunk)))
-            sock.sendall(chunk)
-            offset += chunk_size
+        # Send file in chunks
+        CHUNK = 8192
+        with open(abs_path, 'rb') as f:
+            while True:
+                chunk = f.read(CHUNK)
+                if not chunk:
+                    break
+                sock.sendall(struct.pack('!I', len(chunk)))
+                sock.sendall(chunk)
 
         # End of stream: send zero-length chunk
         sock.sendall(struct.pack('!I', 0))
@@ -532,13 +613,105 @@ def _clamd_scan(filepath, host='127.0.0.1', port=3310, timeout=60):
             return True, None  # Treat unexpected responses as safe (graceful)
 
     except socket.timeout:
-        logger.error("ClamAV scan timed out")
-        return True, None  # Timeout → graceful degradation
+        logger.error("ClamAV scan timed out — treating as inconclusive (blocked)")
+        return False, "ClamAV scan timed out — result inconclusive"
     except Exception as e:
         logger.error(f"ClamAV socket error: {e}")
-        return True, None
+        return False, f"ClamAV socket error — result inconclusive: {str(e)[:60]}"
     finally:
         sock.close()
+
+
+def _clamd_scan_archive_members(filepath, host='127.0.0.1', port=3310, timeout=60):
+    """
+    Deep-scan: extract archive members and scan each individually via clamd.
+    Defense-in-depth against ClamAV's built-in unpacker missing embedded threats.
+
+    Returns: (all_clean: bool, virus_info: str|None)
+      - all_clean=True  → every member scanned clean
+      - all_clean=False → at least one member detected; virus_info has details
+
+    Safety limits:
+      - Max 50 members extracted (skip rest)
+      - Max 100 MB per member (skip oversized)
+      - Path traversal entries are refused
+    """
+    MAX_MEMBERS = 50
+    MAX_MEMBER_SIZE = 100 * 1024 * 1024  # 100 MB
+
+    if not zipfile.is_zipfile(filepath):
+        return True, None  # Not an archive — nothing to deep-scan
+
+    tmp_dir = None
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix='clamav_deep_')
+        with zipfile.ZipFile(filepath, 'r') as zf:
+            members = zf.infolist()
+            scanned = 0
+
+            for info in members:
+                if scanned >= MAX_MEMBERS:
+                    logger.warning(f"[CLAMAV DEEP] Stopping after {MAX_MEMBERS} members")
+                    break
+
+                # Skip directories
+                if info.is_dir():
+                    continue
+
+                # Path traversal guard
+                if '..' in info.filename or info.filename.startswith('/'):
+                    logger.warning(f"[CLAMAV DEEP] Skipping path-traversal entry: {info.filename}")
+                    continue
+
+                # Skip oversized members
+                if info.file_size > MAX_MEMBER_SIZE:
+                    logger.warning(f"[CLAMAV DEEP] Skipping oversized member: {info.filename} ({info.file_size} bytes)")
+                    continue
+
+                # Extract to temp file
+                safe_name = os.path.basename(info.filename) or f"member_{scanned}"
+                member_path = os.path.join(tmp_dir, safe_name)
+
+                # Handle duplicate names
+                if os.path.exists(member_path):
+                    member_path = os.path.join(tmp_dir, f"{scanned}_{safe_name}")
+
+                try:
+                    with zf.open(info) as src, open(member_path, 'wb') as dst:
+                        remaining = info.file_size
+                        while remaining > 0:
+                            chunk = src.read(min(8192, remaining))
+                            if not chunk:
+                                break
+                            dst.write(chunk)
+                            remaining -= len(chunk)
+                except Exception as e:
+                    logger.warning(f"[CLAMAV DEEP] Failed to extract {info.filename}: {e}")
+                    continue
+
+                # Scan extracted member
+                is_clean, virus_name = _clamd_scan(member_path, host, port, timeout)
+                scanned += 1
+
+                if not is_clean:
+                    logger.warning(f"[CLAMAV DEEP] Threat in archive member '{info.filename}': {virus_name}")
+                    return False, f"{virus_name} (in archive: {info.filename})"
+
+            logger.info(f"[CLAMAV DEEP] All {scanned} archive members scanned clean")
+            return True, None
+
+    except zipfile.BadZipFile:
+        logger.warning("[CLAMAV DEEP] Bad ZIP file — skipping deep scan")
+        return True, None
+    except Exception as e:
+        logger.error(f"[CLAMAV DEEP] Archive deep-scan error: {e}")
+        return True, None  # Don't block on deep-scan errors — outer scan is primary
+    finally:
+        if tmp_dir:
+            try:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
 
 
 def run_clamav_local(file_obj, filepath):
@@ -548,6 +721,11 @@ def run_clamav_local(file_obj, filepath):
     Uses TCP socket (port 3310) to communicate with a persistent
     ClamAV daemon container. Virus database loaded once at startup,
     providing ~1-2 second scan times.
+
+    Two-phase scanning:
+      Phase 1: Stream the raw file to clamd (catches known signatures + archives)
+      Phase 2: If Phase 1 passes AND file is a ZIP archive, extract each member
+               and scan individually (defense-in-depth against unpacker evasion)
     
     Returns: (passed: bool, threat_description: str|None, layer_result: dict)
     """
@@ -574,23 +752,43 @@ def run_clamav_local(file_obj, filepath):
 
     try:
         scan_start = time.time()
-        is_clean, virus_name = _clamd_scan(filepath, clamd_host, clamd_port, timeout=60)
-        scan_time = time.time() - scan_start
 
-        if is_clean:
-            logger.info(f"[SECURITY] Layer 3 → ClamAV finished: SAFE ({scan_time:.1f}s)")
-            result = {
-                "status": "safe",
-                "message": f"No virus detected by ClamAV ({scan_time:.1f}s)",
-                "risk": 0
-            }
-            update_stage(file_obj.id, 3, 'pass', result['message'])
-            return True, None, result
-        else:
+        # ── Phase 1: Scan the entire file as a single stream ──
+        is_clean, virus_name = _clamd_scan(filepath, clamd_host, clamd_port, timeout=60)
+
+        if not is_clean:
+            scan_time = time.time() - scan_start
             threat = f"ClamAV detected malware: {virus_name}"
             result = {"status": "malicious", "message": threat, "risk": 100}
             update_stage(file_obj.id, 3, 'fail', threat)
             return False, threat, result
+
+        # ── Phase 2: Deep-scan archive members individually ──
+        if zipfile.is_zipfile(filepath):
+            update_stage(file_obj.id, 3, 'running',
+                         'Phase 2: Deep-scanning archive members individually...')
+            logger.info(f"[SECURITY] Layer 3 → Phase 2: deep-scanning archive members for {file_obj.name}")
+
+            deep_clean, deep_virus = _clamd_scan_archive_members(
+                filepath, clamd_host, clamd_port, timeout=60
+            )
+
+            if not deep_clean:
+                scan_time = time.time() - scan_start
+                threat = f"ClamAV detected malware in archive member: {deep_virus}"
+                result = {"status": "malicious", "message": threat, "risk": 100}
+                update_stage(file_obj.id, 3, 'fail', threat)
+                return False, threat, result
+
+        scan_time = time.time() - scan_start
+        logger.info(f"[SECURITY] Layer 3 → ClamAV finished: SAFE ({scan_time:.1f}s)")
+        result = {
+            "status": "safe",
+            "message": f"No virus detected by ClamAV ({scan_time:.1f}s)",
+            "risk": 0
+        }
+        update_stage(file_obj.id, 3, 'pass', result['message'])
+        return True, None, result
 
     except Exception as e:
         logger.error(f"ClamAV scan error: {e}")
@@ -828,7 +1026,35 @@ def run_sandbox_local(file_obj, filepath):
         db.session.commit()
         return True, None, result
 
-    sandbox_image = os.environ.get('SANDBOX_DOCKER_IMAGE', 'python:3.11-slim@sha256:32ece7335d03ce4bafda8ad0c7e2af31559e31dcd839defc882ea12933d6eafe')
+    # ── IMPORTANT: Sandbox image requirements ──────────────────────────────
+    # The sandbox image MUST be a custom Ubuntu-based image containing:
+    #   strace, ltrace, file, binutils, bash
+    # DO NOT use python:3.11-slim or any slim/alpine image.
+    # Build from: docs/sandbox-image/Dockerfile
+    # Push to your ECR repo and set SANDBOX_DOCKER_IMAGE env var.
+    # Example: 123456789.dkr.ecr.us-east-1.amazonaws.com/stackdrive-sandbox:latest
+    # ──────────────────────────────────────────────────────────────────────
+    sandbox_image = os.environ.get('SANDBOX_DOCKER_IMAGE', '')
+
+    if not sandbox_image:
+        logger.warning(
+            "[SECURITY] SANDBOX_DOCKER_IMAGE env var not set. "
+            "Sandbox layer is DEGRADED. "
+            "Build and set a custom Ubuntu image with strace, ltrace, file, binutils. "
+            "See: docs/sandbox-image/Dockerfile"
+        )
+        result = {
+            "status": "unknown",
+            "message": "Sandbox image not configured — sandbox layer degraded",
+            "risk": 25,
+            "behavior": {"syscalls": [], "file_access": [], "process_activity": [],
+                         "flags": ["⚠ Sandbox not configured — SANDBOX_DOCKER_IMAGE not set"]}
+        }
+        update_stage(file_obj.id, 4, 'pass',
+                     'Sandbox image not configured — layer skipped (degraded mode)')
+        file_obj.sandbox_status_detail = 'degraded_no_image'
+        db.session.commit()
+        return True, None, result
     sandbox_timeout = int(os.environ.get('SANDBOX_TIMEOUT', '10'))
     file_dir = os.path.dirname(os.path.abspath(filepath))
     file_name = os.path.basename(filepath)
@@ -988,7 +1214,7 @@ def run_sandbox_local(file_obj, filepath):
         logger.error(f"[SECURITY] DB commit error for sandbox metadata: {e}")
 
     # Classify
-    if total_risk > 70:
+    if total_risk >= 70:
         status = "malicious"
         primary_flag = all_flags[0] if all_flags else "Multiple high-risk behavioral indicators"
         message = f"Malicious behavior detected (risk: {total_risk}) — {primary_flag}"
@@ -1106,11 +1332,7 @@ def run_pipeline(file_id, s3_key, user_id, temp_filepath=None, temp_dir=None):
             print(f"[PIPELINE] Status set to scanning")
 
             # Initialize AWS S3 client (still needed for file transfer + encryption)
-            session = boto3.Session(
-                aws_access_key_id=user_obj.aws_access_key,
-                aws_secret_access_key=user_obj.aws_secret_key,
-                region_name=user_obj.aws_region
-            )
+            session = _get_aws_session(user_obj)
             s3 = session.client('s3')
 
             if temp_filepath and os.path.exists(temp_filepath):
@@ -1151,12 +1373,26 @@ def run_pipeline(file_id, s3_key, user_id, temp_filepath=None, temp_dir=None):
             failed_layer = None
             threat_type = None
 
+            cumulative_risk = 0
+            CUMULATIVE_BLOCK_THRESHOLD = 70
+
             # Layer 1: SHA-256 + VirusTotal
             print(f"[PIPELINE] Running Layer 1 — SHA-256 + VirusTotal...")
             success, threat, result = run_hash_check(file_obj, temp_filepath)
             layer_results.append(result)
             print(f"[PIPELINE] Layer 1 result: success={success}, result={result}")
-            if success:
+            layer_risk = result.get('risk', 0)
+            if result.get('status') == 'suspicious':
+                cumulative_risk += layer_risk + 15
+            else:
+                cumulative_risk = max(cumulative_risk, layer_risk)
+
+            if success and cumulative_risk >= CUMULATIVE_BLOCK_THRESHOLD:
+                failed = True
+                failed_layer = f'Cumulative risk threshold'
+                threat_type = f"Cumulative threat score {cumulative_risk} exceeded threshold {CUMULATIVE_BLOCK_THRESHOLD} across multiple layers"
+                skip_remaining(file_id, 1)
+            elif success:
                 passed_count += 1
                 file_obj.checks = f'{passed_count}/4 complete'
                 db.session.commit()
@@ -1172,7 +1408,18 @@ def run_pipeline(file_id, s3_key, user_id, temp_filepath=None, temp_dir=None):
                 success, threat, result = layer2_zip_validation(file_obj, temp_filepath)
                 layer_results.append(result)
                 print(f"[PIPELINE] Layer 2 result: success={success}, result={result}")
-                if success:
+                layer_risk = result.get('risk', 0)
+                if result.get('status') == 'suspicious':
+                    cumulative_risk += layer_risk + 15
+                else:
+                    cumulative_risk = max(cumulative_risk, layer_risk)
+
+                if success and cumulative_risk >= CUMULATIVE_BLOCK_THRESHOLD:
+                    failed = True
+                    failed_layer = f'Cumulative risk threshold'
+                    threat_type = f"Cumulative threat score {cumulative_risk} exceeded threshold {CUMULATIVE_BLOCK_THRESHOLD} across multiple layers"
+                    skip_remaining(file_id, 2)
+                elif success:
                     passed_count += 1
                     file_obj.checks = f'{passed_count}/4 complete'
                     db.session.commit()
@@ -1188,7 +1435,18 @@ def run_pipeline(file_id, s3_key, user_id, temp_filepath=None, temp_dir=None):
                 success, threat, result = run_clamav_local(file_obj, temp_filepath)
                 layer_results.append(result)
                 print(f"[PIPELINE] Layer 3 result: success={success}, result={result}")
-                if success:
+                layer_risk = result.get('risk', 0)
+                if result.get('status') == 'suspicious':
+                    cumulative_risk += layer_risk + 15
+                else:
+                    cumulative_risk = max(cumulative_risk, layer_risk)
+
+                if success and cumulative_risk >= CUMULATIVE_BLOCK_THRESHOLD:
+                    failed = True
+                    failed_layer = f'Cumulative risk threshold'
+                    threat_type = f"Cumulative threat score {cumulative_risk} exceeded threshold {CUMULATIVE_BLOCK_THRESHOLD} across multiple layers"
+                    skip_remaining(file_id, 3)
+                elif success:
                     passed_count += 1
                     file_obj.checks = f'{passed_count}/4 complete'
                     db.session.commit()
@@ -1204,7 +1462,18 @@ def run_pipeline(file_id, s3_key, user_id, temp_filepath=None, temp_dir=None):
                 success, threat, result = run_sandbox_local(file_obj, temp_filepath)
                 layer_results.append(result)
                 print(f"[PIPELINE] Layer 4 result: success={success}, result={result}")
-                if success:
+                layer_risk = result.get('risk', 0)
+                if result.get('status') == 'suspicious':
+                    cumulative_risk += layer_risk + 15
+                else:
+                    cumulative_risk = max(cumulative_risk, layer_risk)
+
+                if success and cumulative_risk >= CUMULATIVE_BLOCK_THRESHOLD:
+                    failed = True
+                    failed_layer = f'Cumulative risk threshold'
+                    threat_type = f"Cumulative threat score {cumulative_risk} exceeded threshold {CUMULATIVE_BLOCK_THRESHOLD} across multiple layers"
+                    skip_remaining(file_id, 4)
+                elif success:
                     passed_count += 1
                     file_obj.checks = f'{passed_count}/4 complete'
                     db.session.commit()
@@ -1215,7 +1484,7 @@ def run_pipeline(file_id, s3_key, user_id, temp_filepath=None, temp_dir=None):
                     skip_remaining(file_id, 4)
 
             # ── Compute aggregate risk from layer results ──
-            max_risk = max((r.get('risk', 0) for r in layer_results), default=0)
+            max_risk = max(cumulative_risk, max((r.get('risk', 0) for r in layer_results), default=0))
 
             if failed:
                 # File rejected
@@ -1299,3 +1568,56 @@ def run_pipeline(file_id, s3_key, user_id, temp_filepath=None, temp_dir=None):
                     os.rmdir(temp_dir)
             except Exception:
                 pass
+
+
+# ─── Celery task wrapper ──────────────────────────────────────────
+# Import celery only if available — falls back gracefully if not configured
+try:
+    from celery import shared_task
+
+    @shared_task(
+        bind=True,
+        name='pipeline.run_pipeline_task',
+        max_retries=2,
+        default_retry_delay=10,
+        acks_late=True,
+        reject_on_worker_lost=True,
+    )
+    def run_pipeline_task(self, file_id, s3_key, user_id,
+                          temp_filepath=None, temp_dir=None):
+        """
+        Celery-wrapped pipeline. Use this instead of threading.Thread
+        in production. Falls back to direct call if Celery unavailable.
+        """
+        try:
+            return run_pipeline(file_id, s3_key, user_id,
+                                temp_filepath=temp_filepath,
+                                temp_dir=temp_dir)
+        except Exception as exc:
+            logger.error(f"[PIPELINE TASK] Failed attempt {self.request.retries + 1}: {exc}")
+            raise self.retry(exc=exc)
+
+except ImportError:
+    logger.info("[PIPELINE] Celery not available — using direct threading mode")
+    run_pipeline_task = None  # Caller must use threading.Thread directly
+
+def dispatch_pipeline(file_id, s3_key, user_id,
+                      temp_filepath=None, temp_dir=None):
+    """
+    Smart dispatcher: uses Celery if available, threads otherwise.
+    Replace all threading.Thread(target=run_pipeline, ...) calls with this.
+    """
+    import threading
+    if run_pipeline_task is not None:
+        run_pipeline_task.apply_async(
+            args=[file_id, s3_key, user_id],
+            kwargs={'temp_filepath': temp_filepath, 'temp_dir': temp_dir},
+        )
+    else:
+        t = threading.Thread(
+            target=run_pipeline,
+            args=[file_id, s3_key, user_id],
+            kwargs={'temp_filepath': temp_filepath, 'temp_dir': temp_dir},
+            daemon=True,
+        )
+        t.start()

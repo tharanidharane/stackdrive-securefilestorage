@@ -35,3 +35,273 @@
   justify-content: center;
   animation: modalIn 0.4s var(--ease-bounce);
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   AUTH SPLIT LAYOUT
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Wrapper ──────────────────────────────────────────────────────────────── */
+.auth-split-layout {
+  display: flex;
+  min-height: 100vh;
+  background: #020810;
+  overflow: hidden;
+}
+
+/* ── Left panel: 3D scene ─────────────────────────────────────────────────── */
+.auth-scene-panel {
+  position: relative;
+  flex: 1 1 55%;
+  min-height: 100vh;
+  background: radial-gradient(ellipse at 40% 40%, #0a1628 0%, #020810 70%);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scene-canvas-wrapper {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+/* Subtle grid overlay */
+.auth-scene-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(0, 229, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 229, 255, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* Vignette */
+.auth-scene-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 30%, #020810 100%);
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* ── Scene overlay text ───────────────────────────────────────────────────── */
+.scene-overlay-text {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  z-index: 10;
+  padding: 2.5rem;
+  max-width: 420px;
+  margin-bottom: 2rem;
+  margin-left: 2.5rem;
+}
+
+.scene-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(0, 229, 255, 0.08);
+  border: 1px solid rgba(0, 229, 255, 0.22);
+  color: #00e5ff;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 5px 12px;
+  border-radius: 100px;
+  margin-bottom: 1.2rem;
+}
+
+.scene-headline {
+  font-family: 'Syne', 'Space Grotesk', system-ui, sans-serif;
+  font-size: clamp(2rem, 3.5vw, 2.8rem);
+  font-weight: 800;
+  line-height: 1.1;
+  color: #e8f4ff;
+  margin: 0 0 0.75rem;
+  letter-spacing: -0.02em;
+}
+
+.scene-headline-accent {
+  background: linear-gradient(135deg, #00e5ff 0%, #7c3aed 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.scene-description {
+  font-size: 0.78rem;
+  color: rgba(180, 210, 230, 0.6);
+  line-height: 1.7;
+  margin: 0 0 1.4rem;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  letter-spacing: 0.02em;
+}
+
+.scene-stat-row {
+  display: flex;
+  gap: 1.25rem;
+}
+
+.scene-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(0, 229, 255, 0.65);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+/* Bottom fade for mobile stack */
+.scene-bottom-fade {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 120px;
+  background: linear-gradient(to bottom, transparent, #020810);
+  z-index: 5;
+  pointer-events: none;
+  display: none;
+}
+
+/* ── Right panel: form ────────────────────────────────────────────────────── */
+.auth-form-panel {
+  flex: 0 0 420px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #07101e;
+  border-left: 1px solid rgba(0, 229, 255, 0.08);
+  padding: 2rem 2.5rem;
+  position: relative;
+  z-index: 20;
+  box-shadow: -24px 0 60px rgba(0, 0, 0, 0.5);
+}
+
+/* Keep existing .auth-card styles — just override max-width so it fills the panel */
+.auth-form-panel .auth-card {
+  max-width: 100%;
+  width: 100%;
+  background: transparent;
+  box-shadow: none;
+  border: none;
+  padding: 0;
+}
+
+/* ── Responsive ───────────────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .auth-split-layout {
+    flex-direction: column;
+  }
+
+  .auth-scene-panel {
+    flex: 0 0 260px;
+    min-height: 260px;
+  }
+
+  .scene-bottom-fade {
+    display: block;
+  }
+
+  .scene-overlay-text {
+    margin-bottom: 1.5rem;
+    margin-left: 1.5rem;
+    padding: 1.5rem;
+  }
+
+  .auth-form-panel {
+    flex: 1;
+    border-left: none;
+    border-top: 1px solid rgba(0, 229, 255, 0.08);
+    box-shadow: none;
+    padding: 2rem 1.5rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .auth-scene-panel {
+    flex: 0 0 200px;
+    min-height: 200px;
+  }
+
+  .scene-headline {
+    font-size: 1.5rem;
+  }
+
+  .scene-description,
+  .scene-stat-row {
+    display: none;
+  }
+}
+
+/* ── Cinematic Unlocking Transitions ──────────────────────────────────────── */
+.auth-form-panel {
+  transition: margin-right 1.2s cubic-bezier(0.25, 1, 0.5, 1), opacity 0.8s ease;
+  margin-right: 0;
+  z-index: 20;
+}
+
+.auth-scene-panel {
+  transition: flex 1.2s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.scene-overlay-text {
+  transition: opacity 0.5s ease;
+}
+
+.auth-form-panel.unlocking {
+  /* Sliding it seamlessly offscreen allows the left panel to flex grow smoothly */
+  /* without crushing the width of the form elements (which causes layout jitter) */
+  margin-right: -420px; 
+  opacity: 0;
+  pointer-events: none;
+}
+
+.auth-scene-panel.unlocking {
+  flex: 1 1 100%;
+}
+
+.scene-overlay-text.unlocking {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ── Cinematic Logout Reversal ──────────────────────────────────────── */
+
+.logout-state .auth-form-panel {
+  margin-right: -420px;
+  opacity: 0;
+  pointer-events: none;
+  transition: margin-right 1.2s cubic-bezier(0.25, 1, 0.5, 1), opacity 0.8s ease;
+}
+
+.logout-state.run-anim .auth-form-panel {
+  margin-right: 0;
+  opacity: 1;
+}
+
+.logout-state .auth-scene-panel {
+  flex: 1 1 100vw;
+  transition: flex 1.2s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.logout-state.run-anim .auth-scene-panel {
+  flex: 1 1 55%;
+}
+
+.logout-state .scene-overlay-text {
+  opacity: 0;
+  transition: opacity 0.8s ease 0.5s; /* Delay fade in slightly */
+}
+
+.logout-state.run-anim .scene-overlay-text {
+  opacity: 1;
+  pointer-events: auto;
+}

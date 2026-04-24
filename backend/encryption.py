@@ -26,6 +26,8 @@ from datetime import datetime
 
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
+from Crypto.Protocol.KDF import HKDF
+from Crypto.Hash import SHA256 as CryptoSHA256
 
 logger = logging.getLogger(__name__)
 
@@ -114,44 +116,27 @@ class HybridEncryptionEngine:
             logger.info(f"[ENCRYPT] {step}: {detail}")
 
         try:
-            # ── Step 1: Read raw file ────────────────────────────────
-            report('read', 'Reading file bytes...')
-            with open(filepath, 'rb') as f:
-                raw_data = f.read()
+            # ── Step 1: Read raw file size ───────────────────────────
+            report('read', 'Reading file size for chunked processing...')
+            file_size = os.path.getsize(filepath)
+            report('read', f'File size: {file_size} bytes')
+            if file_size > 500 * 1024 * 1024:
+                logger.warning("[ENCRYPT] File exceeds 500MB, multipart upload recommended")
 
-            file_size = len(raw_data)
-            report('read', f'Read {file_size} bytes')
-
-            # ── Step 2: Generate AES-256 key ─────────────────────────
-            report('aes_keygen', 'Generating AES-256 key...')
-            aes_key = get_random_bytes(32)  # 256-bit true random key
-
-            # ── Step 3: AES-256-GCM encryption ───────────────────────
-            report('aes_encrypt', 'Encrypting with AES-256-GCM...')
-            cipher = AES.new(aes_key, AES.MODE_GCM)
-            ciphertext, tag = cipher.encrypt_and_digest(raw_data)
-            nonce = cipher.nonce  # 16 bytes
-
-            report('aes_encrypt', f'Encrypted {len(ciphertext)} bytes (nonce={len(nonce)}B, tag={len(tag)}B)')
-
-            # ── Step 4: AWS KMS envelope encryption ──────────────────
-            report('kms_wrap', 'Wrapping AES key with AWS KMS...')
-            kms_response = self.kms.encrypt(
+            # ── STEP A — KMS generate_data_key ───────────────────────
+            report('kms_wrap', 'Generating KMS Data Encryption Key (DEK)...')
+            kms_response = self.kms.generate_data_key(
                 KeyId=self.user.kms_key_arn,
-                Plaintext=aes_key,
+                KeySpec='AES_256',
                 EncryptionContext={
-                    'file_id': file_obj.id,
-                    'user_id': self.user.id,
+                    'file_id': str(file_obj.id),
+                    'user_id': str(self.user.id),
                     'purpose': 'stackdrive-file-encryption'
                 }
             )
+            kms_plaintext_dek = kms_response['Plaintext']
             kms_encrypted_key = kms_response['CiphertextBlob']
-            report('kms_wrap', f'AES key wrapped ({len(kms_encrypted_key)} bytes KMS blob)')
 
-            # ── ZERO-TRUST: Wipe plaintext AES key from memory after KMS wrap ──
-            # (Python doesn't guarantee secure wipe, but we overwrite the reference)
-
-            # ── Step 5 & 6: Post-Quantum Cryptography ────────────────
             kem_ciphertext = b''
             kem_public_key = b''
             dsa_signature = b''
@@ -159,20 +144,53 @@ class HybridEncryptionEngine:
             secrets_arn = None
             pqc_status = 'disabled'
 
+            # ── STEP B & C — Post-Quantum Key Encapsulation & HKDF ──
             if PQC_ENABLED and _oqs_available:
                 report('pqc_kem', 'Running ML-KEM-768 (Kyber) key encapsulation...')
-
-                # ── ML-KEM-768 Key Encapsulation ──
                 with oqs.KeyEncapsulation("ML-KEM-768") as kem:
                     kem_public_key = kem.generate_keypair()
                     kem_private_key = kem.export_secret_key()
                     kem_ciphertext, pqc_shared_secret = kem.encap_secret(kem_public_key)
 
-                # Derive hybrid binding: HMAC-SHA256(aes_key || shared_secret)
-                # This cryptographically binds the AES key to the PQC shared secret
-                hybrid_binding = hashlib.sha256(aes_key + pqc_shared_secret).digest()
-
                 report('pqc_kem', f'ML-KEM-768 encapsulation complete (ct={len(kem_ciphertext)}B)')
+                
+                aes_key = HKDF(
+                    master=kms_plaintext_dek + pqc_shared_secret,
+                    key_len=32,
+                    salt=b'stackdrive-v2-hybrid-hkdf',
+                    hashmod=CryptoSHA256,
+                    context=f"file:{file_obj.id}:user:{self.user.id}".encode('utf-8')
+                )
+                hybrid_binding = hashlib.sha256(aes_key + pqc_shared_secret).digest()
+                del kms_plaintext_dek
+                pqc_status = 'ML-KEM-768 + ML-DSA-65'
+            else:
+                report('pqc_kem', 'PQC disabled — using KMS-only envelope encryption')
+                aes_key = kms_plaintext_dek
+                del kms_plaintext_dek
+
+            # ── Step 3: CHUNKED AES-256-GCM encryption ───────────────
+            report('aes_encrypt', 'Encrypting with chunked AES-256-GCM...')
+            cipher = AES.new(aes_key, AES.MODE_GCM)
+            ciphertext_chunks = []
+            CHUNK = 1024 * 1024  # 1 MB
+            actual_size = 0
+            
+            with open(filepath, 'rb') as f:
+                while True:
+                    chunk = f.read(CHUNK)
+                    if not chunk:
+                        break
+                    ciphertext_chunks.append(cipher.encrypt(chunk))
+                    actual_size += len(chunk)
+
+            ciphertext = b''.join(ciphertext_chunks)
+            tag = cipher.digest()
+            nonce = cipher.nonce
+
+            report('aes_encrypt', f'Encrypted {len(ciphertext)} bytes (nonce={len(nonce)}B, tag={len(tag)}B)')
+
+            if PQC_ENABLED and _oqs_available:
 
                 # ── ML-DSA-65 Digital Signature ──
                 report('pqc_dsa', 'Signing payload with ML-DSA-65 (Dilithium)...')
@@ -396,12 +414,12 @@ class HybridEncryptionEngine:
             kms_response = self.kms.decrypt(
                 CiphertextBlob=file_obj.kms_encrypted_key,
                 EncryptionContext={
-                    'file_id': file_obj.id,
-                    'user_id': self.user.id,
+                    'file_id': str(file_obj.id),
+                    'user_id': str(self.user.id),
                     'purpose': 'stackdrive-file-encryption'
                 }
             )
-            aes_key = kms_response['Plaintext']
+            kms_plaintext_dek = kms_response['Plaintext']
 
             # ── Step 4 & 5: PQC verification ─────────────────────────
             if pqc_enabled and file_obj.secrets_manager_arn:
@@ -424,6 +442,14 @@ class HybridEncryptionEngine:
                     with oqs.KeyEncapsulation("ML-KEM-768", secret_key=kyber_private) as kem:
                         pqc_shared_secret = kem.decap_secret(kem_ciphertext)
 
+                    aes_key = HKDF(
+                        master=kms_plaintext_dek + pqc_shared_secret,
+                        key_len=32,
+                        salt=b'stackdrive-v2-hybrid-hkdf',
+                        hashmod=CryptoSHA256,
+                        context=f"file:{file_obj.id}:user:{self.user.id}".encode('utf-8')
+                    )
+                    
                     # Verify hybrid binding
                     hybrid_binding = hashlib.sha256(aes_key + pqc_shared_secret).digest()
                     stored_binding = base64.b64decode(pqc_keys['hybrid_binding'])
@@ -456,6 +482,20 @@ class HybridEncryptionEngine:
                     del kyber_private
                     del pqc_shared_secret
                     del hybrid_binding
+                else:
+                    # PQC verification unavailable — fall back to KMS DEK directly
+                    # Triggered when: Secrets Manager unreachable (pqc_keys is None)
+                    # or liboqs not installed (_oqs_available is False)
+                    logger.warning(
+                        "[DECRYPT] PQC verification skipped — "
+                        "pqc_keys unavailable or liboqs not installed. "
+                        "Falling back to KMS DEK for decryption."
+                    )
+                    aes_key = kms_plaintext_dek
+            else:
+                aes_key = kms_plaintext_dek
+
+            del kms_plaintext_dek
 
             # ── Step 6: AES-256-GCM decryption ───────────────────────
             logger.info("[DECRYPT] AES-256-GCM decryption...")
@@ -490,13 +530,9 @@ def create_encryption_engine(user_obj):
     Returns:
         HybridEncryptionEngine instance
     """
-    import boto3
+    from pipeline import _get_aws_session
 
-    session = boto3.Session(
-        aws_access_key_id=user_obj.aws_access_key,
-        aws_secret_access_key=user_obj.aws_secret_key,
-        region_name=user_obj.aws_region,
-    )
+    session = _get_aws_session(user_obj)
 
     s3 = session.client('s3')
     kms = session.client('kms')

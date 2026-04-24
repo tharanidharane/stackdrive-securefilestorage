@@ -10,6 +10,7 @@ import UploadPage from './pages/UploadPage';
 import FileHistory from './pages/FileHistory';
 import SecurityPage from './pages/SecurityPage';
 import SettingsPage from './pages/SettingsPage';
+import LogoutPage from './pages/LogoutPage';
 import api from './services/api';
 
 const pageTitles = {
@@ -20,7 +21,7 @@ const pageTitles = {
   '/settings': { title: 'Settings', subtitle: 'Account & AWS configuration' },
 };
 
-function AuthenticatedApp({ user, setUser, onLogout }) {
+function AuthenticatedApp({ user, setUser, onLogout, onFinishLogout }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
 
@@ -66,6 +67,7 @@ function AuthenticatedApp({ user, setUser, onLogout }) {
                 onLogout={onLogout}
               />
             } />
+            <Route path="/logout-transition" element={<LogoutPage onFinishLogout={onFinishLogout} />} />
             <Route path="*" element={<Navigate to="/overview" replace />} />
           </Routes>
         </div>
@@ -84,6 +86,8 @@ function HeaderWithTitle({ unreadCount, email, onMarkAllRead }) {
 function AppContent() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isLoggingOutState, setIsLoggingOutState] = useState(false);
+  const navigate = useNavigate();
 
   // Restore session on mount
   useEffect(() => {
@@ -93,7 +97,6 @@ function AppContent() {
         try {
           const data = await api.getMe();
           setUser(data.user);
-          // Store in localStorage too
           localStorage.setItem('stackdrive_session', JSON.stringify({ user: data.user }));
         } catch (e) {
           api.logout();
@@ -103,7 +106,6 @@ function AppContent() {
     };
     restoreSession();
 
-    // Listen for auth expiry
     const handleExpiry = () => {
       setUser(null);
       setLoading(false);
@@ -118,8 +120,14 @@ function AppContent() {
   };
 
   const handleLogout = () => {
+    // Intercept logout to play cinematic over the full screen
+    setIsLoggingOutState(true);
+  };
+
+  const handleFinishLogout = () => {
     api.logout();
     setUser(null);
+    setIsLoggingOutState(false);
   };
 
   if (loading) {
@@ -134,6 +142,10 @@ function AppContent() {
         <div className="spinner" style={{ width: 32, height: 32, borderWidth: 3, borderTopColor: 'var(--accent)' }} />
       </div>
     );
+  }
+
+  if (isLoggingOutState) {
+    return <LogoutPage onFinishLogout={handleFinishLogout} />;
   }
 
   if (!user) {
@@ -151,6 +163,7 @@ function AppContent() {
       user={user}
       setUser={setUser}
       onLogout={handleLogout}
+      onFinishLogout={handleFinishLogout}
     />
   );
 }

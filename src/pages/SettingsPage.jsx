@@ -125,11 +125,13 @@ export default function SettingsPage({ user, onUpdateUser, onLogout }) {
             <div className="aws-card__details">
               <div className="aws-card__row">
                 <span className="aws-card__label">Account ID</span>
-                <span className="aws-card__value mono">{awsDetails.account_id || '123456789012'}</span>
+                <span className="aws-card__value mono">
+                  {awsDetails.account_id ? `•••• •••• ${awsDetails.account_id.slice(-4)}` : '•••• •••• ••••'}
+                </span>
               </div>
               <div className="aws-card__row">
                 <span className="aws-card__label">Region</span>
-                <span className="aws-card__value mono">{awsDetails.region || 'ap-south-1'} (Mumbai)</span>
+                <span className="aws-card__value mono">{awsDetails.region || 'ap-south-1'}</span>
               </div>
               <div className="aws-card__row">
                 <span className="aws-card__label">Quarantine Bucket</span>
@@ -141,7 +143,11 @@ export default function SettingsPage({ user, onUpdateUser, onLogout }) {
               </div>
               <div className="aws-card__row">
                 <span className="aws-card__label">KMS Key</span>
-                <span className="aws-card__value mono">{awsDetails.kms_key_arn || 'arn:aws:kms:...'}</span>
+                <span className="aws-card__value mono">
+                  {awsDetails.kms_key_arn 
+                    ? awsDetails.kms_key_arn.replace(/\d{12}/, '••••••••••••').replace(/key\/[a-f0-9\-]+/, 'key/••••••••-••••-••••-••••-••••••••••••')
+                    : 'arn:aws:kms:••••••••••••'}
+                </span>
               </div>
               <div className="aws-card__row">
                 <span className="aws-card__label">Credentials</span>

@@ -52,8 +52,8 @@ StackDrive addresses all of these by implementing an **automated, multi-layered 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        CLIENT (React 19 + Vite)                        │
-│   Login/Signup ─► Dashboard ─► Upload ─► File History ─► Security      │
+│                        CLIENT (React 19 + Vite)                         │
+│   Login/Signup ─► Dashboard ─► Upload ─► File History ─► Security       │
 │                    3D Quantum Lock Auth Scene (Three.js)                │
 └────────────────────────────────┬────────────────────────────────────────┘
                                  │  REST API (JWT Auth)
@@ -61,24 +61,24 @@ StackDrive addresses all of these by implementing an **automated, multi-layered 
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                     BACKEND (Flask + Python 3.12)                       │
 │                                                                         │
-│  ┌─────────────┐  ┌──────────────────────────────────────────────────┐  │
+│  ┌──────────────┐  ┌─────────────────────────────────────────────────┐  │
 │  │  Auth Layer  │  │        SECURITY PIPELINE (5 Layers)             │  │
-│  │  (JWT+bcrypt)│  │                                                  │  │
+│  │  (JWT+bcrypt)│  │                                                 │  │
 │  └──────┬───────┘  │  L1: SHA-256 + VirusTotal Threat Intelligence   │  │
 │         │          │  L2: ZIP Heuristic Analysis (8 static checks)   │  │
 │         ▼          │  L3: ClamAV (Docker — persistent clamd daemon)  │  │
-│  ┌─────────────┐   │  L4: Sandbox (Docker — behavioral analysis)     │  │
-│  │  SQLite DB   │  │  L5: Hybrid Encryption (AES-256 + KMS + PQC)   │  │
-│  │  (Users,     │  └──────────────────────────────────────────────────┘  │
-│  │   Files,     │                        │                               │
-│  │   Pipeline,  │                        ▼                               │
-│  │   Notifs)    │  ┌──────────────────────────────────────────────────┐  │
-│  └──────────────┘  │            AWS INFRASTRUCTURE                    │  │
-│                    │  S3 (Quarantine + Secure buckets)                │  │
-│                    │  KMS (Envelope encryption + SSE)                 │  │
-│                    │  IAM/STS (Scoped sessions)                       │  │
-│                    │  Secrets Manager (PQC private keys)              │  │
-│                    └──────────────────────────────────────────────────┘  │
+│  ┌──────────────┐  │  L4: Sandbox (Docker — behavioral analysis)     │  │
+│  │  SQLite DB   │  │  L5: Hybrid Encryption (AES-256 + KMS + PQC)    │  │
+│  │  (Users,     │  └─────────────────────────────────────────────────┘  │
+│  │   Files,     │                        │                              │
+│  │   Pipeline,  │                        ▼                              │
+│  │   Notifs)    │  ┌──────────────────────────────────────────────────┐ │
+│  └──────────────┘  │            AWS INFRASTRUCTURE                    │ │
+│                    │  S3 (Quarantine + Secure buckets)                │ │
+│                    │  KMS (Envelope encryption + SSE)                 │ │
+│                    │  IAM/STS (Scoped sessions)                       │ │
+│                    │  Secrets Manager (PQC private keys)              │ │
+│                    └──────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -166,23 +166,23 @@ The most advanced layer — executes files inside a **highly restricted ephemera
 StackDrive implements a **production-grade, zero-trust hybrid encryption architecture** combining classical and post-quantum cryptographic primitives:
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│                    ENCRYPTION FLOW (v2)                        │
-│                                                               │
-│  Raw File ──► AES-256-GCM ──► Encrypted Blob                 │
-│                    │                                          │
-│                    ├── AES Key ──► KMS Envelope Encrypt       │
-│                    │                                          │
-│                    ├── ML-KEM-768 (Kyber) Key Encapsulation   │
-│                    │       └── HKDF(KMS_DEK ∥ PQC_SS)         │
-│                    │             └── Hybrid AES Key            │
-│                    │                                          │
-│                    └── ML-DSA-65 (Dilithium) Digital Signature │
-│                          └── Signs(nonce ∥ CT ∥ tag ∥ binding)│
-│                                                               │
-│  Binary Payload Layout:                                       │
-│  [MAGIC 5B][HDR_LEN 4B][JSON HDR][KEM_CT][NONCE][CT][TAG][SIG]│
-└───────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                    ENCRYPTION FLOW (v2)                         │
+│                                                                 │
+│  Raw File ──► AES-256-GCM ──► Encrypted Blob                    │
+│                    │                                            │
+│                    ├── AES Key ──► KMS Envelope Encrypt         │
+│                    │                                            │
+│                    ├── ML-KEM-768 (Kyber) Key Encapsulation     │
+│                    │       └── HKDF(KMS_DEK ∥ PQC_SS)           │
+│                    │             └── Hybrid AES Key             │
+│                    │                                            │
+│                    └── ML-DSA-65 (Dilithium) Digital Signature  │ 
+│                          └── Signs(nonce ∥ CT ∥ tag ∥ binding)   │
+│                                                                 │
+│  Binary Payload Layout:                                         │
+│  [MAGIC 5B][HDR_LEN 4B][JSON HDR][KEM_CT][NONCE][CT][TAG][SIG]  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Cryptographic Primitives

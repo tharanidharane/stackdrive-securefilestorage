@@ -310,8 +310,8 @@ stackdrive/
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/tharanidharane/stackdrive-securefilestorage.git
-cd stackdrive-securefilestorage
+git clone https://github.com/UnisysUIP/2026-AI-Driven-Secure-Cloud-File-Upload-System-with-Quantum-Resistant-Encryption-Support.git
+cd 2026-AI-Driven-Secure-Cloud-File-Upload-System-with-Quantum-Resistant-Encryption-Support
 ```
 
 ### 2. Backend Setup

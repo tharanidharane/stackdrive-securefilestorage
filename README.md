@@ -1,5 +1,4 @@
 # 2026-AI-Driven-Secure-Cloud-File-Upload-System-with-Quantum-Resistant-Encryption-Support
-### https://idea.unisys.com/D8755
 
 <p align="center">
   <img src="https://img.shields.io/badge/Platform-Web-0ea5e9?style=for-the-badge" alt="Platform" />

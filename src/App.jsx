@@ -11,12 +11,15 @@ import FileHistory from './pages/FileHistory';
 import SecurityPage from './pages/SecurityPage';
 import SettingsPage from './pages/SettingsPage';
 import LogoutPage from './pages/LogoutPage';
+import ShareLanding from './pages/ShareLanding';
+import SharedFiles from './pages/SharedFiles';
 import api from './services/api';
 
 const pageTitles = {
   '/overview': { title: 'Dashboard', subtitle: 'Overview of your security posture' },
   '/upload': { title: 'Upload', subtitle: 'Secure file ingestion' },
   '/history': { title: 'File History', subtitle: 'All uploaded files' },
+  '/shares': { title: 'Shared Files', subtitle: 'Manage secure share links & access logs' },
   '/security': { title: 'Security', subtitle: 'Pipeline performance & threats' },
   '/settings': { title: 'Settings', subtitle: 'Account & AWS configuration' },
 };
@@ -53,12 +56,13 @@ function AuthenticatedApp({ user, setUser, onLogout, onFinishLogout }) {
         onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
       <div className={`main-wrapper ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
-        <HeaderWithTitle unreadCount={unreadCount} email={user?.email} onMarkAllRead={() => setUnreadCount(0)} />
+        <HeaderWithTitle unreadCount={unreadCount} email={user?.email} onMarkAllRead={() => setUnreadCount(0)} onLogout={onLogout} />
         <div className="main-content">
           <Routes>
             <Route path="/overview" element={<Dashboard user={user} />} />
             <Route path="/upload" element={<UploadPage user={user} />} />
             <Route path="/history" element={<FileHistory />} />
+            <Route path="/shares" element={<SharedFiles />} />
             <Route path="/security" element={<SecurityPage />} />
             <Route path="/settings" element={
               <SettingsPage
@@ -76,11 +80,11 @@ function AuthenticatedApp({ user, setUser, onLogout, onFinishLogout }) {
   );
 }
 
-function HeaderWithTitle({ unreadCount, email, onMarkAllRead }) {
+function HeaderWithTitle({ unreadCount, email, onMarkAllRead, onLogout }) {
   const location = useLocation();
   const pageInfo = pageTitles[location.pathname] || { title: 'StackDrive', subtitle: '' };
   return <Header title={pageInfo.title} subtitle={pageInfo.subtitle}
-                 unreadCount={unreadCount} email={email} onMarkAllRead={onMarkAllRead} />;
+                 unreadCount={unreadCount} email={email} onMarkAllRead={onMarkAllRead} onLogout={onLogout} />;
 }
 
 function AppContent() {
@@ -151,6 +155,7 @@ function AppContent() {
   if (!user) {
     return (
       <Routes>
+        <Route path="/s/:token" element={<ShareLanding />} />
         <Route path="/login" element={<LoginPage onLogin={handleLogin} />} />
         <Route path="/signup" element={<SignupPage onLogin={handleLogin} />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
@@ -159,12 +164,19 @@ function AppContent() {
   }
 
   return (
-    <AuthenticatedApp
-      user={user}
-      setUser={setUser}
-      onLogout={handleLogout}
-      onFinishLogout={handleFinishLogout}
-    />
+    <>
+      <Routes>
+        <Route path="/s/:token" element={<ShareLanding />} />
+        <Route path="*" element={
+          <AuthenticatedApp
+            user={user}
+            setUser={setUser}
+            onLogout={handleLogout}
+            onFinishLogout={handleFinishLogout}
+          />
+        } />
+      </Routes>
+    </>
   );
 }
 

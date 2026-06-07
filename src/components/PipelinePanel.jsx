@@ -4,7 +4,7 @@ import './PipelinePanel.css';
 
 const stageIcons = {
   'SHA-256 + VirusTotal': Fingerprint,
-  'ZIP Heuristic Analysis': Archive,
+  'File Heuristic Analysis': Archive,
   'ClamAV (Docker)': Bug,
   'Sandbox (Docker)': Box,
   'Encryption': Lock,

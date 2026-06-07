@@ -119,6 +119,20 @@ class ApiService {
    * @returns {Promise<Object>} - Upload result with file record
    */
   async uploadFile(file, onProgress) {
+    // Start computing the SHA-256 hash in parallel with the upload process
+    const hashPromise = (async () => {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        return hashHex;
+      } catch (e) {
+        console.error("Failed to compute SHA-256 in browser:", e);
+        return null;
+      }
+    })();
+
     // ── Step 1: Initiate multipart upload ──
     const initData = await this.request('/upload/initiate', {
       method: 'POST',
@@ -136,6 +150,9 @@ class ApiService {
         file, presignedUrls, chunkSize, totalParts, onProgress
       );
 
+      // Wait for hash calculation to finish
+      const sha256 = await hashPromise;
+
       // ── Step 3: Complete multipart upload ──
       const completeData = await this.request('/upload/complete', {
         method: 'POST',
@@ -144,6 +161,7 @@ class ApiService {
           fileId,
           s3Key,
           parts,
+          sha256,
         }),
       });
 
@@ -328,6 +346,115 @@ class ApiService {
   // ── Security ──────────────────────────
   async getSecurityStats() {
     return this.request('/security/stats');
+  }
+
+  // ── AI Copilot ────────────────────────
+  async sendCopilotMessage(message) {
+    return this.request('/copilot/chat', {
+      method: 'POST',
+      body: JSON.stringify({ message }),
+    });
+  }
+
+  async clearCopilotHistory() {
+    return this.request('/copilot/history', { method: 'DELETE' });
+  }
+
+  async downloadCopilotReportData(fileId) {
+    const url = `${API_BASE}/copilot/report_data/${fileId}`;
+    const token = this.getToken();
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) {
+      let errText = 'Failed to fetch report data';
+      try {
+        const errObj = await response.json();
+        errText = errObj.error || errText;
+      } catch (e) {
+        errText = await response.text();
+      }
+      throw new ApiError(`Server Error: ${errText}`, response.status);
+    }
+    const data = await response.json();
+    return data.report;
+  }
+
+  async createShareLink(fileId, options = {}) {
+    const url = `${API_BASE}/files/${fileId}/share`;
+    const token = this.getToken();
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        expires_in: options.expires_in || '24h',
+        max_downloads: options.max_downloads !== undefined ? options.max_downloads : -1,
+        password: options.password || null
+      })
+    });
+    if (!response.ok) {
+      let errText = 'Failed to create share link';
+      try {
+        const errObj = await response.json();
+        errText = errObj.error || errText;
+      } catch (e) {
+        errText = await response.text();
+      }
+      throw new ApiError(errText, response.status);
+    }
+    return response.json();
+  }
+
+  async getShares() {
+    return this.request('/shares');
+  }
+
+  async revokeShare(shareId) {
+    return this.request(`/shares/${shareId}/revoke`, { method: 'POST' });
+  }
+
+  async extendShare(shareId, hours = 24) {
+    return this.request(`/shares/${shareId}/extend`, {
+      method: 'POST',
+      body: JSON.stringify({ hours }),
+    });
+  }
+
+  async getShareAudit(shareId) {
+    return this.request(`/shares/${shareId}/audit`);
+  }
+
+  async getShareInfo(token) {
+    const url = `${API_BASE}/share/${token}/info`;
+    const response = await fetch(url);
+    const data = await response.json();
+    if (!response.ok) {
+      throw new ApiError(data.error || 'Failed to fetch share info', response.status);
+    }
+    return data;
+  }
+
+  async downloadSharedFile(token, options = {}) {
+    const url = `${API_BASE}/share/${token}/download`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        password: options.password || null,
+        email: options.email || null,
+      })
+    });
+    if (!response.ok) {
+      const data = await response.json();
+      throw new ApiError(data.error || 'Failed to download shared file', response.status);
+    }
+    const blob = await response.blob();
+    return blob;
   }
 }
 

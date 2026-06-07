@@ -22,6 +22,9 @@ class User(db.Model):
 
     files = db.relationship('File', backref='owner', lazy='dynamic')
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -70,6 +73,9 @@ class File(db.Model):
 
     pipeline_stages = db.relationship('PipelineStage', backref='file', lazy='dynamic',
                                        order_by='PipelineStage.stage_order')
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     def to_dict(self):
         stages = [s.to_dict() for s in self.pipeline_stages.all()]
@@ -126,6 +132,9 @@ class PipelineStage(db.Model):
     started_at = db.Column(db.DateTime, nullable=True)
     completed_at = db.Column(db.DateTime, nullable=True)
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
     def to_dict(self):
         return {
             'name': self.name,
@@ -145,6 +154,9 @@ class Notification(db.Model):
     action = db.Column(db.String(100), default='Deleted from quarantine')
     read = db.Column(db.Boolean, default=False)
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -154,4 +166,87 @@ class Notification(db.Model):
             'threatType': self.threat_type,
             'action': self.action,
             'read': self.read,
+        }
+
+class SharedFile(db.Model):
+    __tablename__ = 'shared_files'
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    file_id = db.Column(db.String(36), db.ForeignKey('files.id'), nullable=False, index=True)
+    owner_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False, index=True)
+    share_token = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    max_downloads = db.Column(db.Integer, nullable=False, default=1)  # -1 represents unlimited
+    current_downloads = db.Column(db.Integer, nullable=False, default=0)
+    password_hash = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    revoked = db.Column(db.Boolean, default=False)
+    
+    file = db.relationship('File', backref='shared_links')
+    
+    def is_expired(self):
+        return datetime.utcnow() > self.expires_at
+
+    def to_dict(self):
+        if self.revoked:
+            status = 'revoked'
+        elif self.is_expired():
+            status = 'expired'
+        elif self.max_downloads != -1 and self.current_downloads >= self.max_downloads:
+            status = 'expired'
+        else:
+            status = 'active'
+
+        return {
+            'id': self.id,
+            'file_id': self.file_id,
+            'fileId': self.file_id,
+            'owner_id': self.owner_id,
+            'ownerId': self.owner_id,
+            'share_token': self.share_token,
+            'token': self.share_token,
+            'created_at': self.created_at.isoformat() + 'Z',
+            'createdAt': self.created_at.isoformat() + 'Z',
+            'expires_at': self.expires_at.isoformat() + 'Z',
+            'expiresAt': self.expires_at.isoformat() + 'Z',
+            'max_downloads': self.max_downloads,
+            'maxDownloads': self.max_downloads,
+            'current_downloads': self.current_downloads,
+            'downloads': self.current_downloads,
+            'password_protected': self.password_hash is not None,
+            'passwordProtected': self.password_hash is not None,
+            'status': status,
+            'is_expired': self.is_expired() or (self.max_downloads != -1 and self.current_downloads >= self.max_downloads),
+            'file_name': self.file.name if self.file else 'Unknown',
+            'fileName': self.file.name if self.file else 'Unknown',
+            'file_size_display': self.file.size_display if self.file else 'Unknown',
+            'fileSize': self.file.size_display if self.file else 'Unknown'
+        }
+
+class ShareAuditLog(db.Model):
+    __tablename__ = 'share_audit_logs'
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    event_type = db.Column(db.String(50), nullable=False)  # link_created, link_accessed, download_completed, expired_attempt, wrong_password
+    ip_address = db.Column(db.String(45), nullable=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    file_id = db.Column(db.String(36), nullable=True)
+    share_token_id = db.Column(db.String(36), nullable=True)
+    share_token = db.Column(db.String(64), nullable=True)
+    detail = db.Column(db.String(255), nullable=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'event_type': self.event_type,
+            'event': self.event_type,
+            'ip_address': self.ip_address,
+            'ipAddress': self.ip_address,
+            'timestamp': self.timestamp.isoformat() + 'Z',
+            'file_id': self.file_id,
+            'fileId': self.file_id,
+            'share_token_id': self.share_token_id,
+            'shareTokenId': self.share_token_id,
+            'share_token': self.share_token,
+            'shareToken': self.share_token,
+            'detail': self.detail,
+            'details': self.detail
         }

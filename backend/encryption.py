@@ -31,6 +31,16 @@ from Crypto.Hash import SHA256 as CryptoSHA256
 
 logger = logging.getLogger(__name__)
 
+from boto3.s3.transfer import TransferConfig
+
+# Multi-threaded S3 transfer configuration for large files (e.g., 20MB - 500MB)
+S3_TRANSFER_CONFIG = TransferConfig(
+    multipart_threshold=8 * 1024 * 1024,   # 8MB threshold for multipart
+    max_concurrency=15,                   # Use 15 parallel threads
+    multipart_chunksize=8 * 1024 * 1024,  # 8MB chunk size per part
+    use_threads=True
+)
+
 # ── Configuration ────────────────────────────────────────────────────
 PQC_ENABLED = os.environ.get('PQC_ENABLED', 'false').lower() == 'true'
 
@@ -172,19 +182,28 @@ class HybridEncryptionEngine:
             # ── Step 3: CHUNKED AES-256-GCM encryption ───────────────
             report('aes_encrypt', 'Encrypting with chunked AES-256-GCM...')
             cipher = AES.new(aes_key, AES.MODE_GCM)
-            ciphertext_chunks = []
-            CHUNK = 1024 * 1024  # 1 MB
-            actual_size = 0
             
-            with open(filepath, 'rb') as f:
-                while True:
-                    chunk = f.read(CHUNK)
-                    if not chunk:
-                        break
-                    ciphertext_chunks.append(cipher.encrypt(chunk))
-                    actual_size += len(chunk)
-
-            ciphertext = b''.join(ciphertext_chunks)
+            # Optimized block processing:
+            # - For small/moderate files (<= 50MB), encrypt the whole file in a single native call to bypass loop overhead.
+            # - For large files, stream directly to a BytesIO buffer with 16MB chunks to minimize
+            #   Python iteration overhead AND avoid double-memory from list+join.
+            if file_size <= 50 * 1024 * 1024:
+                with open(filepath, 'rb') as f:
+                    plaintext = f.read()
+                ciphertext = cipher.encrypt(plaintext)
+                del plaintext
+            else:
+                ct_buffer = io.BytesIO()
+                CHUNK = 16 * 1024 * 1024  # 16 MB chunks — fewer iterations
+                with open(filepath, 'rb') as f:
+                    while True:
+                        chunk = f.read(CHUNK)
+                        if not chunk:
+                            break
+                        ct_buffer.write(cipher.encrypt(chunk))
+                ciphertext = ct_buffer.getvalue()
+                ct_buffer.close()
+                
             tag = cipher.digest()
             nonce = cipher.nonce
 
@@ -282,7 +301,7 @@ class HybridEncryptionEngine:
             # ── Step 9: Upload to S3 with KMS SSE ────────────────────
             report('s3_upload', 'Uploading encrypted blob to S3 secure bucket...')
 
-            enc_s3_key = f"{s3_key}.enc"
+            enc_s3_key = s3_key
             self.s3.upload_fileobj(
                 final_blob,
                 self.user.secure_bucket,
@@ -290,7 +309,8 @@ class HybridEncryptionEngine:
                 ExtraArgs={
                     'ServerSideEncryption': 'aws:kms',
                     'SSEKMSKeyId': self.user.kms_key_arn,
-                }
+                },
+                Config=S3_TRANSFER_CONFIG
             )
 
             report('s3_upload', f'Uploaded to s3://{self.user.secure_bucket}/{enc_s3_key}')
@@ -361,153 +381,189 @@ class HybridEncryptionEngine:
             bucket = parts[0]
             key = parts[1]
 
-            logger.info(f"[DECRYPT] Downloading from {bucket}/{key}")
-            obj = self.s3.get_object(Bucket=bucket, Key=key)
-            blob = obj['Body'].read()
+            logger.info(f"[DECRYPT] Downloading via multi-threaded transfer from {bucket}/{key}")
+            import tempfile
+            temp_dir = tempfile.mkdtemp()
+            temp_filepath = os.path.join(temp_dir, 'decrypt_temp.enc')
+            try:
+                self.s3.download_file(
+                    bucket,
+                    key,
+                    temp_filepath,
+                    Config=S3_TRANSFER_CONFIG
+                )
+                
+                with open(temp_filepath, 'rb') as f:
+                    # Verify magic bytes
+                    magic = f.read(5)
+                    if magic != PAYLOAD_MAGIC:
+                        return None, 'Invalid encrypted payload (bad magic bytes)'
 
-            # ── Step 2: Parse the binary payload ─────────────────────
-            logger.info(f"[DECRYPT] Parsing payload ({len(blob)} bytes)")
+                    # Read header length
+                    header_len_bytes = f.read(4)
+                    if len(header_len_bytes) < 4:
+                        return None, 'Invalid encrypted payload (missing header length)'
+                    header_len = struct.unpack('>I', header_len_bytes)[0]
 
-            offset = 0
+                    # Read and parse header JSON
+                    header_json = f.read(header_len)
+                    header = json.loads(header_json.decode('utf-8'))
 
-            # Verify magic bytes
-            magic = blob[offset:offset + 5]
-            offset += 5
-            if magic != PAYLOAD_MAGIC:
-                return None, 'Invalid encrypted payload (bad magic bytes)'
+                    kem_ct_len = header['kem_ciphertext_len']
+                    nonce_len = header['aes_nonce_len']
+                    ct_len = header['aes_ciphertext_len']
+                    tag_len = header['aes_tag_len']
+                    sig_len = header['dsa_signature_len']
+                    pqc_enabled = header.get('pqc_enabled', False)
 
-            # Read header length
-            header_len = struct.unpack('>I', blob[offset:offset + 4])[0]
-            offset += 4
+                    # Extract binary components
+                    kem_ciphertext = f.read(kem_ct_len)
+                    nonce = f.read(nonce_len)
 
-            # Read and parse header JSON
-            header_json = blob[offset:offset + header_len]
-            offset += header_len
-            header = json.loads(header_json.decode('utf-8'))
+                    # Save current offset for the ciphertext
+                    ciphertext_offset = f.tell()
 
-            kem_ct_len = header['kem_ciphertext_len']
-            nonce_len = header['aes_nonce_len']
-            ct_len = header['aes_ciphertext_len']
-            tag_len = header['aes_tag_len']
-            sig_len = header['dsa_signature_len']
-            pqc_enabled = header.get('pqc_enabled', False)
+                    # Seek to the end of ciphertext to read tag and signature
+                    f.seek(ciphertext_offset + ct_len)
+                    tag = f.read(tag_len)
+                    dsa_signature = f.read(sig_len)
 
-            # Extract binary components
-            kem_ciphertext = blob[offset:offset + kem_ct_len]
-            offset += kem_ct_len
+                    # Seek back to ciphertext start offset
+                    f.seek(ciphertext_offset)
 
-            nonce = blob[offset:offset + nonce_len]
-            offset += nonce_len
+                    # ── Step 3: KMS decrypt the AES key ──────────────────────
+                    logger.info("[DECRYPT] Decrypting AES key via KMS...")
 
-            ciphertext = blob[offset:offset + ct_len]
-            offset += ct_len
-
-            tag = blob[offset:offset + tag_len]
-            offset += tag_len
-
-            dsa_signature = blob[offset:offset + sig_len]
-            offset += sig_len
-
-            # ── Step 3: KMS decrypt the AES key ──────────────────────
-            logger.info("[DECRYPT] Decrypting AES key via KMS...")
-
-            kms_response = self.kms.decrypt(
-                CiphertextBlob=file_obj.kms_encrypted_key,
-                EncryptionContext={
-                    'file_id': str(file_obj.id),
-                    'user_id': str(self.user.id),
-                    'purpose': 'stackdrive-file-encryption'
-                }
-            )
-            kms_plaintext_dek = kms_response['Plaintext']
-
-            # ── Step 4 & 5: PQC verification ─────────────────────────
-            if pqc_enabled and file_obj.secrets_manager_arn:
-                logger.info("[DECRYPT] Retrieving PQC private keys from Secrets Manager...")
-
-                secret_name = f"stackdrive/{self.user.id}/{file_obj.id}/pqc-keys"
-                try:
-                    sm_response = self.secrets.get_secret_value(SecretId=secret_name)
-                    pqc_keys = json.loads(sm_response['SecretString'])
-                except Exception as e:
-                    logger.warning(f"[DECRYPT] Secrets Manager retrieval failed: {e} — skipping PQC verification")
-                    pqc_keys = None
-
-                if pqc_keys and _oqs_available:
-                    # ── ML-KEM Decapsulation ──
-                    logger.info("[DECRYPT] ML-KEM-768 decapsulation...")
-
-                    kyber_private = base64.b64decode(pqc_keys['kyber_private_key'])
-
-                    with oqs.KeyEncapsulation("ML-KEM-768", secret_key=kyber_private) as kem:
-                        pqc_shared_secret = kem.decap_secret(kem_ciphertext)
-
-                    aes_key = HKDF(
-                        master=kms_plaintext_dek + pqc_shared_secret,
-                        key_len=32,
-                        salt=b'stackdrive-v2-hybrid-hkdf',
-                        hashmod=CryptoSHA256,
-                        context=f"file:{file_obj.id}:user:{self.user.id}".encode('utf-8')
+                    kms_response = self.kms.decrypt(
+                        CiphertextBlob=file_obj.kms_encrypted_key,
+                        EncryptionContext={
+                            'file_id': str(file_obj.id),
+                            'user_id': str(self.user.id),
+                            'purpose': 'stackdrive-file-encryption'
+                        }
                     )
+                    kms_plaintext_dek = kms_response['Plaintext']
+
+                    ciphertext = None
+
+                    # ── Step 4 & 5: PQC verification ─────────────────────────
+                    if pqc_enabled and file_obj.secrets_manager_arn:
+                        logger.info("[DECRYPT] Retrieving PQC private keys from Secrets Manager...")
+
+                        secret_name = f"stackdrive/{self.user.id}/{file_obj.id}/pqc-keys"
+                        try:
+                            sm_response = self.secrets.get_secret_value(SecretId=secret_name)
+                            pqc_keys = json.loads(sm_response['SecretString'])
+                        except Exception as e:
+                            logger.warning(f"[DECRYPT] Secrets Manager retrieval failed: {e} — skipping PQC verification")
+                            pqc_keys = None
+
+                        if pqc_keys and _oqs_available:
+                            # ── ML-KEM Decapsulation ──
+                            logger.info("[DECRYPT] ML-KEM-768 decapsulation...")
+
+                            kyber_private = base64.b64decode(pqc_keys['kyber_private_key'])
+
+                            with oqs.KeyEncapsulation("ML-KEM-768", secret_key=kyber_private) as kem:
+                                pqc_shared_secret = kem.decap_secret(kem_ciphertext)
+
+                            aes_key = HKDF(
+                                master=kms_plaintext_dek + pqc_shared_secret,
+                                key_len=32,
+                                salt=b'stackdrive-v2-hybrid-hkdf',
+                                hashmod=CryptoSHA256,
+                                context=f"file:{file_obj.id}:user:{self.user.id}".encode('utf-8')
+                            )
+                            
+                            # Verify hybrid binding
+                            hybrid_binding = hashlib.sha256(aes_key + pqc_shared_secret).digest()
+                            stored_binding = base64.b64decode(pqc_keys['hybrid_binding'])
+
+                            if hybrid_binding != stored_binding:
+                                del aes_key
+                                return None, 'Hybrid binding verification FAILED — possible key tampering'
+
+                            logger.info("[DECRYPT] ML-KEM-768 hybrid binding verified ✓")
+
+                            # ── ML-DSA Verification ──
+                            logger.info("[DECRYPT] ML-DSA-65 signature verification...")
+
+                            # Read the ciphertext for PQC signature verification
+                            ciphertext = f.read(ct_len)
+                            sign_payload = nonce + ciphertext + tag + hybrid_binding
+
+                            with oqs.Signature("ML-DSA-65") as verifier:
+                                is_valid = verifier.verify(
+                                    sign_payload,
+                                    dsa_signature,
+                                    file_obj.dsa_public_key
+                                )
+
+                            if not is_valid:
+                                del aes_key
+                                return None, 'ML-DSA-65 signature verification FAILED — payload may be tampered'
+
+                            logger.info("[DECRYPT] ML-DSA-65 signature verified ✓")
+
+                            # Cleanup PQC secrets from memory
+                            del kyber_private
+                            del pqc_shared_secret
+                            del hybrid_binding
+                        else:
+                            # PQC verification unavailable — fall back to KMS DEK directly
+                            logger.warning(
+                                "[DECRYPT] PQC verification skipped — "
+                                "pqc_keys unavailable or liboqs not installed. "
+                                "Falling back to KMS DEK for decryption."
+                            )
+                            aes_key = kms_plaintext_dek
+                    else:
+                        aes_key = kms_plaintext_dek
+
+                    del kms_plaintext_dek
+
+                    # ── Step 6: AES-256-GCM decryption ───────────────────────
+                    logger.info("[DECRYPT] AES-256-GCM decryption...")
+
+                    cipher = AES.new(aes_key, AES.MODE_GCM, nonce=nonce)
                     
-                    # Verify hybrid binding
-                    hybrid_binding = hashlib.sha256(aes_key + pqc_shared_secret).digest()
-                    stored_binding = base64.b64decode(pqc_keys['hybrid_binding'])
+                    if ciphertext is not None:
+                        plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+                        del ciphertext
+                    else:
+                        # Stream the ciphertext in chunks directly from file to optimize memory
+                        f.seek(ciphertext_offset)
+                        plaintext_buffer = io.BytesIO()
+                        CHUNK = 16 * 1024 * 1024  # 16 MB chunks
+                        remaining = ct_len
+                        while remaining > 0:
+                            chunk_to_read = min(CHUNK, remaining)
+                            ct_chunk = f.read(chunk_to_read)
+                            if not ct_chunk:
+                                break
+                            plaintext_buffer.write(cipher.decrypt(ct_chunk))
+                            remaining -= len(ct_chunk)
+                        
+                        plaintext = plaintext_buffer.getvalue()
+                        plaintext_buffer.close()
+                        
+                        # Verify GCM tag
+                        cipher.verify(tag)
 
-                    if hybrid_binding != stored_binding:
-                        del aes_key
-                        return None, 'Hybrid binding verification FAILED — possible key tampering'
+                    # ── ZERO-TRUST: Wipe AES key ──
+                    del aes_key
 
-                    logger.info("[DECRYPT] ML-KEM-768 hybrid binding verified ✓")
+                    logger.info(f"[DECRYPT] Success — {len(plaintext)} bytes decrypted")
+                    return plaintext, None
 
-                    # ── ML-DSA Verification ──
-                    logger.info("[DECRYPT] ML-DSA-65 signature verification...")
-
-                    sign_payload = nonce + ciphertext + tag + hybrid_binding
-
-                    with oqs.Signature("ML-DSA-65") as verifier:
-                        is_valid = verifier.verify(
-                            sign_payload,
-                            dsa_signature,
-                            file_obj.dsa_public_key
-                        )
-
-                    if not is_valid:
-                        del aes_key
-                        return None, 'ML-DSA-65 signature verification FAILED — payload may be tampered'
-
-                    logger.info("[DECRYPT] ML-DSA-65 signature verified ✓")
-
-                    # Cleanup PQC secrets from memory
-                    del kyber_private
-                    del pqc_shared_secret
-                    del hybrid_binding
-                else:
-                    # PQC verification unavailable — fall back to KMS DEK directly
-                    # Triggered when: Secrets Manager unreachable (pqc_keys is None)
-                    # or liboqs not installed (_oqs_available is False)
-                    logger.warning(
-                        "[DECRYPT] PQC verification skipped — "
-                        "pqc_keys unavailable or liboqs not installed. "
-                        "Falling back to KMS DEK for decryption."
-                    )
-                    aes_key = kms_plaintext_dek
-            else:
-                aes_key = kms_plaintext_dek
-
-            del kms_plaintext_dek
-
-            # ── Step 6: AES-256-GCM decryption ───────────────────────
-            logger.info("[DECRYPT] AES-256-GCM decryption...")
-
-            cipher = AES.new(aes_key, AES.MODE_GCM, nonce=nonce)
-            plaintext = cipher.decrypt_and_verify(ciphertext, tag)
-
-            # ── ZERO-TRUST: Wipe AES key ──
-            del aes_key
-
-            logger.info(f"[DECRYPT] Success — {len(plaintext)} bytes decrypted")
-            return plaintext, None
+            finally:
+                try:
+                    if os.path.exists(temp_filepath):
+                        os.remove(temp_filepath)
+                    if os.path.exists(temp_dir):
+                        os.rmdir(temp_dir)
+                except Exception:
+                    pass
 
         except Exception as e:
             logger.error(f"[DECRYPT] FAILED: {e}")
@@ -530,12 +586,12 @@ def create_encryption_engine(user_obj):
     Returns:
         HybridEncryptionEngine instance
     """
-    from pipeline import _get_aws_session
+    from pipeline import _get_aws_session, BOTO3_CLIENT_CONFIG
 
     session = _get_aws_session(user_obj)
 
-    s3 = session.client('s3')
-    kms = session.client('kms')
-    secrets = session.client('secretsmanager')
+    s3 = session.client('s3', config=BOTO3_CLIENT_CONFIG)
+    kms = session.client('kms', config=BOTO3_CLIENT_CONFIG)
+    secrets = session.client('secretsmanager', config=BOTO3_CLIENT_CONFIG)
 
     return HybridEncryptionEngine(s3, kms, secrets, user_obj), s3

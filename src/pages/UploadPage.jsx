@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import UploadZone from '../components/UploadZone';
 import PipelinePanel from '../components/PipelinePanel';
+import AICopilot from '../components/AICopilot';
 import { useToast } from '../components/Toast';
 import api from '../services/api';
 import './UploadPage.css';
@@ -87,7 +88,7 @@ export default function UploadPage({ user }) {
           <div className="upload-page__header">
             <h2 className="section-title">Upload File</h2>
             <p className="upload-page__desc">
-              Drop your ZIP file below. It will be quarantined and scanned through our 4-layer security pipeline before being encrypted and stored in your AWS S3 bucket.
+              Drop your file below. It will be quarantined and scanned through our 4-layer security pipeline before being encrypted and stored in your AWS S3 bucket.
             </p>
           </div>
 
@@ -98,7 +99,7 @@ export default function UploadPage({ user }) {
           <div className="upload-page__info">
             <div className="upload-info-card">
               <h4>Accepted Format</h4>
-              <p>.zip files only</p>
+              <p>All file types</p>
             </div>
             <div className="upload-info-card">
               <h4>Max File Size</h4>
@@ -142,6 +143,8 @@ export default function UploadPage({ user }) {
           <PipelinePanel {...pipelineData} />
         </div>
       )}
+
+      <AICopilot />
     </>
   );
 }

@@ -16,15 +16,16 @@ from botocore.exceptions import ClientError
 from flask_cors import CORS
 from flask_jwt_extended import (
     JWTManager, create_access_token, jwt_required,
-    get_jwt_identity, get_jwt
+    get_jwt_identity, get_jwt, verify_jwt_in_request
 )
 from flask_mail import Mail, Message
 import bcrypt
 import io
 
+import gc
 from config import Config
 from models import db, User, File, PipelineStage, Notification
-from pipeline import init_pipeline_stages, run_pipeline, compute_sha256, migrate_old_stage_names
+from pipeline import init_pipeline_stages, run_pipeline, compute_sha256, migrate_old_stage_names, warmup_clamav, dispatch_pipeline
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -46,15 +47,13 @@ CORS(app, origins=[
 jwt = JWTManager(app)
 db.init_app(app)
 
-# Ensure storage dirs exist
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs(app.config['SECURE_FOLDER'], exist_ok=True)
-
 # Create tables
 with app.app_context():
     db.create_all()
     # Migrate old pipeline stage names to new naming convention
     migrate_old_stage_names()
+    # Pre-warm ClamAV daemon container in background asynchronously
+    warmup_clamav()
 
 
 # ════════════════════════════════════════
@@ -283,8 +282,18 @@ def disconnect_aws():
 # FILE UPLOAD — PRESIGNED MULTIPART (FAST)
 # ════════════════════════════════════════
 
-# Chunk size for multipart upload: 10MB per part
-MULTIPART_CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB
+def calculate_chunk_size(file_size):
+    # Minimum chunk size for S3 is 5MB.
+    # We dynamically increase it up to 64MB for larger files to minimize HTTP round-trips.
+    if file_size <= 50 * 1024 * 1024:
+        return 8 * 1024 * 1024       # 8 MB chunks
+    elif file_size <= 100 * 1024 * 1024:
+        return 16 * 1024 * 1024     # 16 MB chunks
+    elif file_size <= 250 * 1024 * 1024:
+        return 32 * 1024 * 1024     # 32 MB chunks
+    else:
+        return 64 * 1024 * 1024     # 64 MB chunks
+
 
 @app.route('/api/upload/initiate', methods=['POST'])
 @jwt_required()
@@ -310,15 +319,13 @@ def initiate_upload():
     if not file_name:
         return jsonify({'error': 'File name is required'}), 400
 
-    if not file_name.lower().endswith('.zip'):
-        return jsonify({'error': 'Only .zip files are accepted'}), 400
-
-    if file_size > app.config['MAX_CONTENT_LENGTH']:
+    max_size = int(app.config.get('MAX_CONTENT_LENGTH', 500 * 1024 * 1024))
+    if int(file_size) > max_size:
         return jsonify({'error': 'File exceeds 500MB limit'}), 413
 
     safe_name = secure_filename(file_name)
     file_id = str(uuid.uuid4())
-    s3_key = f"uploads/{file_id}/{safe_name}"
+    s3_key = safe_name
 
     try:
         session = boto3.Session(
@@ -335,8 +342,9 @@ def initiate_upload():
         )
         upload_id = mpu['UploadId']
 
-        # Calculate total parts
-        total_parts = max(1, -(-file_size // MULTIPART_CHUNK_SIZE))  # Ceiling division
+        # Calculate total parts based on dynamic chunk size
+        chunk_size = calculate_chunk_size(file_size)
+        total_parts = max(1, -(-file_size // chunk_size))  # Ceiling division
 
         # Generate presigned URLs for each part
         presigned_urls = []
@@ -379,7 +387,7 @@ def initiate_upload():
             'uploadId': upload_id,
             'fileId': file_id,
             's3Key': s3_key,
-            'chunkSize': MULTIPART_CHUNK_SIZE,
+            'chunkSize': chunk_size,
             'totalParts': total_parts,
             'presignedUrls': presigned_urls,
         }), 200
@@ -408,6 +416,7 @@ def complete_upload():
     file_id = data.get('fileId')
     s3_key = data.get('s3Key')
     parts = data.get('parts', [])
+    sha256 = data.get('sha256')
 
     if not upload_id or not file_id or not s3_key or not parts:
         return jsonify({'error': 'Missing required fields'}), 400
@@ -415,6 +424,10 @@ def complete_upload():
     file_record = File.query.filter_by(id=file_id, user_id=user.id).first()
     if not file_record:
         return jsonify({'error': 'File record not found'}), 404
+
+    if sha256:
+        file_record.sha256_hash = sha256
+        db.session.commit()
 
     try:
         session = boto3.Session(
@@ -440,13 +453,8 @@ def complete_upload():
         # Extract just the filename from s3_key for pipeline
         safe_name = s3_key.split('/')[-1]
 
-        # Run pipeline in background — no temp file needed, file is already in S3!
-        thread = threading.Thread(
-            target=run_pipeline,
-            args=(file_id, s3_key, user.id, None, None),
-            daemon=True,
-        )
-        thread.start()
+        # Run pipeline in background via dispatcher
+        dispatch_pipeline(file_id, s3_key, user.id, temp_filepath=None, temp_dir=None)
 
         return jsonify({
             'message': 'File uploaded to quarantine — pipeline starting',
@@ -525,8 +533,7 @@ def upload_file():
     if not file.filename:
         return jsonify({'error': 'No file selected'}), 400
     
-    if not file.filename.lower().endswith('.zip'):
-        return jsonify({'error': 'Only .zip files are accepted'}), 400
+
     
     file_id = str(uuid.uuid4())
     safe_name = secure_filename(file.filename)
@@ -574,13 +581,9 @@ def upload_file():
     # Initialize pipeline stages
     init_pipeline_stages(file_id)
     
-    # Run pipeline in background thread
-    thread = threading.Thread(
-        target=run_pipeline,
-        args=(file_id, safe_name, user.id, temp_filepath, temp_dir),
-        daemon=True,
-    )
-    thread.start()
+    s3_key = safe_name
+    # Run pipeline in background via dispatcher
+    dispatch_pipeline(file_id, s3_key, user.id, temp_filepath=temp_filepath, temp_dir=temp_dir)
     
     return jsonify({
         'message': 'File uploaded to quarantine — pipeline starting',
@@ -632,8 +635,6 @@ def download_file(file_id):
     try:
         from encryption import create_encryption_engine, HybridEncryptionEngine
 
-        from encryption import create_encryption_engine
-
         # strictly enforce v2 hybrid decryption
         engine, _ = create_encryption_engine(user)
         decrypted_data, error = engine.decrypt_file(file)
@@ -683,9 +684,11 @@ def delete_file(file_id):
                         SecretId=secret_name,
                         ForceDeleteWithoutRecovery=True
                     )
-                except Exception:
+                except Exception as e:
+                    print(f"Failed to delete secret: {e}")
                     pass  # Best-effort cleanup
-        except Exception:
+        except Exception as e:
+            print(f"Failed to delete from S3: {e}")
             pass
     
     # Delete pipeline stages
@@ -825,6 +828,550 @@ def security_stats():
         'layerStats': layer_stats,
         'recentThreats': [t.to_dict() for t in threats],
     }), 200
+
+
+# ════════════════════════════════════════
+# AI COPILOT (Gemini / Intelligent Fallback)
+# ════════════════════════════════════════
+
+@app.route('/api/copilot/chat', methods=['POST'])
+@jwt_required()
+def copilot_chat():
+    """AI Copilot chat endpoint powered by Gemini API or local intelligent engine."""
+    data = request.get_json()
+    if not data or not data.get('message', '').strip():
+        return jsonify({'error': 'Message is required'}), 400
+
+    user_id = get_jwt_identity()
+    user_message = data['message'].strip()
+
+    from copilot import handle_copilot_message, call_gemini
+
+    # Load system prompt
+    import os
+    prompt_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'stackdrive_copilot_system_prompt.md'
+    )
+    try:
+        with open(prompt_path, 'r', encoding='utf-8') as f:
+            system_prompt = f.read()
+    except FileNotFoundError:
+        system_prompt = "You are StackDrive Bot."
+
+    # Try Gemini first
+    reply = None
+    if os.environ.get('GEMINI_API_KEY'):
+        reply = call_gemini(user_id, user_message, system_prompt)
+
+    # Fallback to local intelligent engine
+    if not reply:
+        try:
+            reply = handle_copilot_message(user_id, user_message)
+        except Exception as e:
+            print(f"[COPILOT] Error: {e}")
+            return jsonify({'reply': "I encountered an internal error. Please try again."}), 500
+
+    if not reply:
+        return jsonify({'reply': "I didn't understand that."}), 200
+
+
+
+    # Format reply (remove tags from UI view)
+    reply = reply.replace('[REPORT_START]', '').replace('[REPORT_END]', '').strip()
+    return jsonify({'reply': reply}), 200
+
+@app.route('/api/copilot/report_data/<file_id>', methods=['GET'])
+@jwt_required()
+def get_report_data(file_id):
+    user_id = get_jwt_identity()
+    user_obj = User.query.get(user_id)
+    file_obj = File.query.filter_by(id=file_id, user_id=user_id).first()
+    if not file_obj:
+        return jsonify({'error': 'File not found'}), 404
+        
+    import os
+    from copilot import call_gemini, handle_copilot_message
+    
+    prompt_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'stackdrive_copilot_system_prompt.md'
+    )
+    try:
+        with open(prompt_path, 'r', encoding='utf-8') as f:
+            system_prompt = f.read()
+    except FileNotFoundError:
+        system_prompt = "You are StackDrive Copilot."
+
+    user_message = f"generate a report for {file_obj.name}"
+    
+    reply = None
+    if os.environ.get('GEMINI_API_KEY'):
+        reply = call_gemini(user_id, user_message, system_prompt)
+        
+    if not reply:
+        try:
+            reply = handle_copilot_message(user_id, user_message)
+        except:
+            pass
+
+    if not reply:
+        return jsonify({'error': 'Failed to generate report text'}), 500
+
+    import re
+    report_text = reply
+    match = re.search(r'\[REPORT_START\](.*?)\[REPORT_END\]', reply, re.DOTALL)
+    if match:
+        report_text = match.group(1).strip()
+        
+    return jsonify({'report': report_text}), 200
+
+
+@app.route('/api/copilot/history', methods=['DELETE'])
+@jwt_required()
+def clear_copilot_history():
+    """Clear conversation history for the current user."""
+    user_id = get_jwt_identity()
+    from copilot import clear_conversation_history
+    clear_conversation_history(user_id)
+    return jsonify({'message': 'Conversation history cleared'}), 200
+
+
+# ════════════════════════════════════════
+# SECURE FILE SHARING
+# ════════════════════════════════════════
+from models import SharedFile, ShareAuditLog
+import secrets
+from datetime import datetime, timedelta
+import io
+import gc
+
+def watermark_pdf(pdf_bytes, text):
+    try:
+        from pypdf import PdfReader, PdfWriter
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import letter
+
+        # Create watermark PDF in memory
+        watermark_io = io.BytesIO()
+        can = canvas.Canvas(watermark_io, pagesize=letter)
+        can.setFont("Helvetica", 14)
+        can.setFillColorRGB(0.7, 0.7, 0.7, alpha=0.3)
+        
+        can.saveState()
+        can.translate(300, 400)
+        can.rotate(45)
+        watermark_msg = f"Shared with: {text}"
+        can.drawCentredString(0, 0, watermark_msg)
+        can.restoreState()
+        can.save()
+        
+        watermark_io.seek(0)
+        watermark_pdf = PdfReader(watermark_io)
+        watermark_page = watermark_pdf.pages[0]
+        
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        writer = PdfWriter()
+        
+        for page in reader.pages:
+            page.merge_page(watermark_page, over=True)
+            writer.add_page(page)
+            
+        output_io = io.BytesIO()
+        writer.write(output_io)
+        return output_io.getvalue()
+    except Exception as e:
+        print(f"[WATERMARK ERROR] PDF Watermarking failed: {e}")
+        return pdf_bytes
+
+def watermark_text(text_bytes, text):
+    try:
+        content = text_bytes.decode('utf-8', errors='ignore')
+        watermark = f"\n\n[ SECURE WATERMARK: Shared with {text} ]\n"
+        return (content + watermark).encode('utf-8')
+    except Exception as e:
+        print(f"[WATERMARK ERROR] Text Watermarking failed: {e}")
+        return text_bytes
+
+def process_shared_download(token, password=None, email=None):
+    link = SharedFile.query.filter_by(share_token=token).first()
+    if not link:
+        log = ShareAuditLog(
+            event_type='expired_attempt',
+            ip_address=request.remote_addr,
+            share_token=token,
+            detail="Invalid token download attempt"
+        )
+        db.session.add(log)
+        db.session.commit()
+        return jsonify({'error': 'Share link not found'}), 404
+        
+    if link.revoked:
+        log = ShareAuditLog(
+            event_type='expired_attempt',
+            ip_address=request.remote_addr,
+            file_id=link.file_id,
+            share_token_id=link.id,
+            share_token=token,
+            detail="Revoked link download attempt"
+        )
+        db.session.add(log)
+        db.session.commit()
+        return jsonify({'error': 'This sharing link has been revoked.'}), 403
+        
+    if link.is_expired():
+        log = ShareAuditLog(
+            event_type='expired_attempt',
+            ip_address=request.remote_addr,
+            file_id=link.file_id,
+            share_token_id=link.id,
+            share_token=token,
+            detail="Expired link download attempt"
+        )
+        db.session.add(log)
+        db.session.commit()
+        return jsonify({'error': 'This sharing link has expired.'}), 403
+        
+    if link.max_downloads != -1 and link.current_downloads >= link.max_downloads:
+        log = ShareAuditLog(
+            event_type='expired_attempt',
+            ip_address=request.remote_addr,
+            file_id=link.file_id,
+            share_token_id=link.id,
+            share_token=token,
+            detail="Download limit exceeded attempt"
+        )
+        db.session.add(log)
+        db.session.commit()
+        return jsonify({'error': 'This sharing link has reached its download limit.'}), 403
+
+    if link.password_hash:
+        if not password or not bcrypt.checkpw(password.encode('utf-8'), link.password_hash.encode('utf-8')):
+            log = ShareAuditLog(
+                event_type='wrong_password_attempt',
+                ip_address=request.remote_addr,
+                file_id=link.file_id,
+                share_token_id=link.id,
+                share_token=token,
+                detail=f"Incorrect password attempt for download (provided: {bool(password)}, email: {email})"
+            )
+            db.session.add(log)
+            db.session.commit()
+            return jsonify({'error': 'Incorrect password'}), 401
+
+    file_obj = link.file
+    user_obj = User.query.get(file_obj.user_id)
+    
+    from encryption import create_encryption_engine
+    try:
+        engine, _ = create_encryption_engine(user_obj)
+        decrypted_data, error = engine.decrypt_file(file_obj)
+        if error:
+            return jsonify({'error': error}), 500
+    except Exception as e:
+        print(f'[DECRYPTION ERROR] {e}')
+        return jsonify({'error': 'Failed to decrypt shared file'}), 500
+
+    # Apply watermarking if applicable
+    email_clean = (email or '').strip()
+    if email_clean:
+        if file_obj.name.lower().endswith('.pdf'):
+            decrypted_data = watermark_pdf(decrypted_data, email_clean)
+        elif file_obj.name.lower().endswith('.txt'):
+            decrypted_data = watermark_text(decrypted_data, email_clean)
+
+    # Increment downloads
+    link.current_downloads += 1
+    db.session.commit()
+
+    # Log audit
+    log = ShareAuditLog(
+        event_type='download_completed',
+        ip_address=request.remote_addr,
+        file_id=link.file_id,
+        share_token_id=link.id,
+        share_token=token,
+        detail=f"File downloaded successfully by {email_clean or 'Anonymous'} (IP: {request.remote_addr})"
+    )
+    db.session.add(log)
+    
+    # Notify owner
+    try:
+        notif = Notification(
+            user_id=link.owner_id,
+            file_name=file_obj.name,
+            layer="Share Service",
+            threat_type="File Downloaded",
+            action=f"Downloaded by {email_clean or 'Anonymous recipient'} (IP: {request.remote_addr})"
+        )
+        db.session.add(notif)
+    except Exception as e:
+        print(f"Notification creation failed: {e}")
+
+    db.session.commit()
+
+    # Send email notification to owner
+    try:
+        owner_user = User.query.get(link.owner_id)
+        msg = Message(
+            subject=f"[StackDrive] Shared File Downloaded: {file_obj.name}",
+            sender=app.config['MAIL_USERNAME'],
+            recipients=[owner_user.email],
+            body=f"Hello,\n\nYour shared file '{file_obj.name}' was successfully downloaded by {email_clean or 'an anonymous user'} (IP: {request.remote_addr}) on {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC.\n\nLink details:\nShare Token: {token}\nTotal downloads: {link.current_downloads}\n\nBest regards,\nStackDrive Security Team"
+        )
+        threading.Thread(target=lambda: mail.send(msg)).start()
+    except Exception as e:
+        print(f"Failed to send email notification: {e}")
+
+    # Stream the decrypted file
+    response = send_file(
+        io.BytesIO(decrypted_data),
+        as_attachment=True,
+        download_name=file_obj.name,
+        mimetype='application/octet-stream'
+    )
+    
+    # Explicitly clear memory buffers
+    del decrypted_data
+    gc.collect()
+    
+    return response
+
+@app.before_request
+def handle_options_share():
+    if request.method == 'OPTIONS' and '/share' in request.path:
+        return '', 200
+
+@app.route('/api/files/<file_id>/share', methods=['POST'])
+@jwt_required()
+def create_share_link(file_id):
+    user_id = get_jwt_identity()
+    user_obj = User.query.get(user_id)
+    file_obj = File.query.filter_by(id=file_id, user_id=user_id).first()
+    
+    if not file_obj or file_obj.status != 'safe':
+        return jsonify({'error': 'File not found or not safe to share'}), 404
+        
+    data = request.json or {}
+    expiry_option = data.get('expires_in', '24h')
+    max_downloads = int(data.get('max_downloads', -1))
+    password = data.get('password')
+    
+    import re
+    match = re.match(r'^(\d+)([mhd])$', expiry_option)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2)
+        if unit == 'm':
+            delta = timedelta(minutes=amount)
+        elif unit == 'h':
+            delta = timedelta(hours=amount)
+        elif unit == 'd':
+            delta = timedelta(days=amount)
+        else:
+            delta = timedelta(hours=24)
+    else:
+        delta = timedelta(hours=24)
+        
+    expires_at = datetime.utcnow() + delta
+    
+    password_hash = None
+    if password:
+        password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        
+    token = secrets.token_urlsafe(32)
+    
+    link = SharedFile(
+        file_id=file_obj.id,
+        owner_id=user_id,
+        share_token=token,
+        expires_at=expires_at,
+        max_downloads=max_downloads,
+        password_hash=password_hash
+    )
+    
+    db.session.add(link)
+    db.session.commit()
+    
+    # Log audit
+    log = ShareAuditLog(
+        event_type='link_created',
+        ip_address=request.remote_addr,
+        file_id=file_obj.id,
+        share_token_id=link.id,
+        share_token=token,
+        detail=f"Share link created by owner {user_obj.email} (max downloads: {max_downloads}, expires: {expires_at})"
+    )
+    db.session.add(log)
+    db.session.commit()
+    
+    return jsonify({
+        'message': 'Share link created',
+        'token': token,
+        'expires_at': link.expires_at.isoformat() + 'Z'
+    }), 200
+
+@app.route('/api/share/<token>/info', methods=['GET'])
+def get_share_info(token):
+    link = SharedFile.query.filter_by(share_token=token).first()
+    if not link:
+        log = ShareAuditLog(
+            event_type='expired_attempt',
+            ip_address=request.remote_addr,
+            share_token=token,
+            detail="Invalid token accessed"
+        )
+        db.session.add(log)
+        db.session.commit()
+        return jsonify({'error': 'Share link not found'}), 404
+        
+    if link.revoked:
+        log = ShareAuditLog(
+            event_type='expired_attempt',
+            ip_address=request.remote_addr,
+            file_id=link.file_id,
+            share_token_id=link.id,
+            share_token=token,
+            detail="Revoked link accessed"
+        )
+        db.session.add(log)
+        db.session.commit()
+        return jsonify({'error': 'This sharing link has been revoked.'}), 403
+        
+    if link.is_expired():
+        log = ShareAuditLog(
+            event_type='expired_attempt',
+            ip_address=request.remote_addr,
+            file_id=link.file_id,
+            share_token_id=link.id,
+            share_token=token,
+            detail="Expired link accessed"
+        )
+        db.session.add(log)
+        db.session.commit()
+        return jsonify({'error': 'This sharing link has expired.'}), 403
+        
+    if link.max_downloads != -1 and link.current_downloads >= link.max_downloads:
+        log = ShareAuditLog(
+            event_type='expired_attempt',
+            ip_address=request.remote_addr,
+            file_id=link.file_id,
+            share_token_id=link.id,
+            share_token=token,
+            detail="Limit exceeded link accessed"
+        )
+        db.session.add(log)
+        db.session.commit()
+        return jsonify({'error': 'This sharing link has reached its download limit.'}), 403
+        
+    # Log access
+    log = ShareAuditLog(
+        event_type='link_accessed',
+        ip_address=request.remote_addr,
+        file_id=link.file_id,
+        share_token_id=link.id,
+        share_token=token,
+        detail="Landing page accessed"
+    )
+    db.session.add(log)
+    db.session.commit()
+    
+    return jsonify({
+        'share': {
+            'fileName': link.file.name,
+            'fileSize': link.file.size_display,
+            'expiresAt': link.expires_at.isoformat() + 'Z',
+            'maxDownloads': link.max_downloads,
+            'downloads': link.current_downloads,
+            'passwordProtected': link.password_hash is not None
+        }
+    }), 200
+
+@app.route('/api/share/<token>', methods=['GET'])
+def download_shared_file_get(token):
+    password = request.args.get('password')
+    email = request.args.get('email')
+    return process_shared_download(token, password, email)
+
+@app.route('/api/share/<token>/download', methods=['POST'])
+def download_shared_file_post(token):
+    data = request.json or {}
+    password = data.get('password')
+    email = data.get('email')
+    return process_shared_download(token, password, email)
+
+@app.route('/api/shares', methods=['GET'])
+@jwt_required()
+def get_user_shares():
+    user_id = get_jwt_identity()
+    shares = SharedFile.query.filter_by(owner_id=user_id).order_by(SharedFile.created_at.desc()).all()
+    return jsonify({'shares': [s.to_dict() for s in shares]}), 200
+
+@app.route('/api/shares/<share_id>/revoke', methods=['POST'])
+@jwt_required()
+def revoke_share(share_id):
+    user_id = get_jwt_identity()
+    share = SharedFile.query.filter_by(id=share_id, owner_id=user_id).first()
+    if not share:
+        return jsonify({'error': 'Share link not found'}), 404
+        
+    share.revoked = True
+    db.session.commit()
+    
+    # Log audit
+    log = ShareAuditLog(
+        event_type='link_revoked',
+        ip_address=request.remote_addr,
+        file_id=share.file_id,
+        share_token_id=share.id,
+        share_token=share.share_token,
+        detail="Share link revoked by owner"
+    )
+    db.session.add(log)
+    db.session.commit()
+    
+    return jsonify({'message': 'Share link revoked successfully', 'share': share.to_dict()}), 200
+
+@app.route('/api/shares/<share_id>/extend', methods=['POST'])
+@jwt_required()
+def extend_share(share_id):
+    user_id = get_jwt_identity()
+    share = SharedFile.query.filter_by(id=share_id, owner_id=user_id).first()
+    if not share:
+        return jsonify({'error': 'Share link not found'}), 404
+        
+    data = request.json or {}
+    hours = int(data.get('hours', 24))
+    
+    base_time = max(share.expires_at, datetime.utcnow())
+    share.expires_at = base_time + timedelta(hours=hours)
+    share.revoked = False  # Auto un-revoke if extended
+    db.session.commit()
+    
+    # Log audit
+    log = ShareAuditLog(
+        event_type='link_extended',
+        ip_address=request.remote_addr,
+        file_id=share.file_id,
+        share_token_id=share.id,
+        share_token=share.share_token,
+        detail=f"Share link extended by {hours} hours"
+    )
+    db.session.add(log)
+    db.session.commit()
+    
+    return jsonify({'message': 'Share link extended successfully', 'share': share.to_dict()}), 200
+
+@app.route('/api/shares/<share_id>/audit', methods=['GET'])
+@jwt_required()
+def get_share_audit(share_id):
+    user_id = get_jwt_identity()
+    share = SharedFile.query.filter_by(id=share_id, owner_id=user_id).first()
+    if not share:
+        return jsonify({'error': 'Share link not found'}), 404
+        
+    logs = ShareAuditLog.query.filter_by(share_token_id=share_id).order_by(ShareAuditLog.timestamp.desc()).all()
+    return jsonify({'logs': [l.to_dict() for l in logs]}), 200
 
 
 # ════════════════════════════════════════

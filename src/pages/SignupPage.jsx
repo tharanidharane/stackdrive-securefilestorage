@@ -102,7 +102,7 @@ export default function SignupPage({ onLogin }) {
             <span className="scene-headline-accent">File Upload</span>
           </h1>
           <p className="scene-description">
-            Hash Validation · ZIP Bomb Defense<br />
+            Hash Validation · Archive Bomb Defense<br />
             ClamAV · Isolated Docker Sandbox
           </p>
           <div className="scene-stat-row">

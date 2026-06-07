@@ -21,7 +21,7 @@ function SecurityStatCard({ label, value, icon: Icon, color, suffix = '' }) {
 
 const layerIcons = {
   'SHA-256 + VirusTotal': Fingerprint,
-  'ZIP Heuristic Analysis': Archive,
+  'File Heuristic Analysis': Archive,
   'ClamAV (Docker)': Bug,
   'Sandbox (Docker)': Box,
 };
@@ -157,8 +157,8 @@ export default function SecurityPage() {
             <div className="pipeline-desc-card__icon" style={{ color: 'var(--color-scan)' }}>
               <Archive size={24} />
             </div>
-            <h4>Layer 2 — ZIP Heuristic Analysis</h4>
-            <p>Deep archive heuristic scan. Detects ZIP bombs, path traversal attacks, hidden files, obfuscated filenames, nested archives, excessive file counts, and dangerous executables.</p>
+            <h4>Layer 2 — File Heuristic Analysis</h4>
+            <p>Deep file & archive heuristic scan. For archives: detects ZIP bombs, path traversal attacks, hidden files, obfuscated filenames, nested archives, and dangerous executables. For non-archives: MIME-type validation and executable masquerading detection.</p>
           </div>
           <div className="pipeline-desc-card">
             <div className="pipeline-desc-card__icon" style={{ color: 'var(--color-queue)' }}>

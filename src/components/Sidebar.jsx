@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { BarChart2, Upload, FolderOpen, Shield, Settings, ChevronLeft, ChevronRight } from 'lucide-react';
+import { BarChart2, Upload, FolderOpen, Share2, Shield, Settings, ChevronLeft, ChevronRight } from 'lucide-react';
 import LogoIcon from './LogoIcon';
 import './Sidebar.css';
 
@@ -8,6 +8,7 @@ const navItems = [
   { path: '/overview', label: 'Overview', icon: BarChart2 },
   { path: '/upload', label: 'Upload', icon: Upload },
   { path: '/history', label: 'File History', icon: FolderOpen },
+  { path: '/shares', label: 'Shared Files', icon: Share2 },
   { path: '/security', label: 'Security', icon: Shield },
   { path: '/settings', label: 'Settings', icon: Settings },
 ];

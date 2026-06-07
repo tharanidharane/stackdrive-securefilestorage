@@ -29,7 +29,7 @@ export default function FileTable({ files, loading = false, onRowClick, compact 
       <div className="empty-state">
         <FolderOpen size={48} />
         <h3>No files uploaded yet</h3>
-        <p>Start by dropping a ZIP file in the upload zone above.</p>
+        <p>Start by dropping a file in the upload zone above.</p>
       </div>
     );
   }

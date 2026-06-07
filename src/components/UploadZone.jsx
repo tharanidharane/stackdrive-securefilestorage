@@ -42,11 +42,6 @@ export default function UploadZone({ onUpload, disabled = false, useApi = false 
   };
 
   const validateFile = (file) => {
-    if (!file.name.endsWith('.zip')) {
-      setError('Only .zip files are accepted.');
-      setTimeout(() => setError(''), 3000);
-      return false;
-    }
     if (file.size > 500 * 1024 * 1024) {
       setError('File exceeds 500MB limit.');
       setTimeout(() => setError(''), 3000);
@@ -177,7 +172,7 @@ export default function UploadZone({ onUpload, disabled = false, useApi = false 
       <input
         type="file"
         ref={fileInputRef}
-        accept=".zip"
+        accept="*"
         onChange={handleFileSelect}
         style={{ display: 'none' }}
       />
@@ -214,9 +209,9 @@ export default function UploadZone({ onUpload, disabled = false, useApi = false 
         <div className="upload-zone__content">
           <UploadCloud size={48} className="upload-zone__icon" />
           <p className="upload-zone__text">
-            Drag & drop your ZIP file here
+            Drag & drop your file here
           </p>
-          <span className="upload-zone__hint">or click to browse · Max 500MB · ZIP only</span>
+          <span className="upload-zone__hint">or click to browse · Max 500MB · All file types</span>
           <span className="upload-zone__hint upload-zone__hint--speed">
             <Zap size={12} /> Direct-to-S3 multipart upload · Parallel chunks
           </span>

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 
 const PIPELINE_STAGES = [
   { name: 'Hash Check', icon: 'Fingerprint', detail: 'Comparing against known malware signatures' },
-  { name: 'ZIP Validation', icon: 'Archive', detail: 'Verifying archive structure & integrity' },
+  { name: 'File Heuristic Analysis', icon: 'Archive', detail: 'Analyzing file structure & integrity' },
   { name: 'ClamAV Scan', icon: 'Bug', detail: 'Antivirus engine deep scan' },
   { name: 'Sandbox Analysis', icon: 'Box', detail: 'Docker isolated behavior analysis' },
   { name: 'Encryption', icon: 'Lock', detail: 'AES-256 + Kyber PQ encryption' },

@@ -571,3 +571,13 @@ a:hover {
 .text-pass    { color: var(--color-pass); }
 .text-primary { color: var(--text-primary); }
 .text-muted   { color: var(--text-muted); }
+
+/* Hide default number inputs spinners */
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type=number] {
+  -moz-appearance: textfield;
+}

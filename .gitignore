@@ -86,4 +86,11 @@ Thumbs.db
 *.tar
 *.img
 
+# =========================
+# Project Specific (Unnecessary Files)
+# =========================
+backend/__pycache__/
+backend/storage/
+backend/stackdrive.db
+
 

@@ -31,31 +31,31 @@ export default function SettingsPage({ user, onUpdateUser, onLogout }) {
   const handleConnect = async (e) => {
     if (e) e.preventDefault();
     if (!awsForm.access_key || !awsForm.secret_key) {
-        addToast('Access Key and Secret Key are required', 'error');
-        return;
+      addToast('Access Key and Secret Key are required', 'error');
+      return;
     }
 
     setConnecting(true);
     setProvisioning(true);
 
     try {
-        const data = await api.connectAws(awsForm);
-        setProvisioning(false);
-        setAwsConnected(true);
-        setAwsDetails({
-            connected: true,
-            account_id: data.user.aws_account_id,
-            region: data.user.aws_region,
-            quarantine_bucket: data.user.quarantine_bucket,
-            secure_bucket: data.user.secure_bucket,
-            kms_key_arn: data.user.kms_key_arn,
-        });
-        onUpdateUser?.(data.user);
-        addToast('AWS environment provisioned successfully!', 'success');
+      const data = await api.connectAws(awsForm);
+      setProvisioning(false);
+      setAwsConnected(true);
+      setAwsDetails({
+        connected: true,
+        account_id: data.user.aws_account_id,
+        region: data.user.aws_region,
+        quarantine_bucket: data.user.quarantine_bucket,
+        secure_bucket: data.user.secure_bucket,
+        kms_key_arn: data.user.kms_key_arn,
+      });
+      onUpdateUser?.(data.user);
+      addToast('AWS environment provisioned successfully!', 'success');
     } catch (err) {
-        setProvisioning(false);
-        setConnecting(false);
-        addToast(err.message || 'Failed to provision AWS resources', 'error');
+      setProvisioning(false);
+      setConnecting(false);
+      addToast(err.message || 'Failed to provision AWS resources', 'error');
     }
   };
 
@@ -86,15 +86,15 @@ export default function SettingsPage({ user, onUpdateUser, onLogout }) {
             <h2 className="provision-title">Setting Up AWS Resources</h2>
             <p className="provision-subtitle">Auto-provisioning your secure infrastructure...</p>
             <div className="provision-steps" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: '30px' }}>
-                <div className="provision-step provision-step--active" style={{ fontSize: '18px', display: 'flex', alignItems: 'center', gap: '15px' }}>
-                  <div className="provision-step__dot" style={{ transform: 'scale(1.5)' }}>
-                     <span className="spinner" style={{ width: 14, height: 14 }} />
-                  </div>
-                  <span style={{ fontWeight: '500' }}>Provisioning Real Infrastructure via Boto3...</span>
+              <div className="provision-step provision-step--active" style={{ fontSize: '18px', display: 'flex', alignItems: 'center', gap: '15px' }}>
+                <div className="provision-step__dot" style={{ transform: 'scale(1.5)' }}>
+                  <span className="spinner" style={{ width: 14, height: 14 }} />
                 </div>
-                <div style={{ marginTop: '20px', fontSize: '14px', color: 'var(--text-muted)' }}>
-                    This usually takes 15-30 seconds depending on AWS API.
-                </div>
+                <span style={{ fontWeight: '500' }}>Provisioning Real Infrastructure via Boto3...</span>
+              </div>
+              <div style={{ marginTop: '20px', fontSize: '14px', color: 'var(--text-muted)' }}>
+                This usually takes 15-30 seconds depending on AWS API.
+              </div>
             </div>
           </div>
         </div>
@@ -144,7 +144,7 @@ export default function SettingsPage({ user, onUpdateUser, onLogout }) {
               <div className="aws-card__row">
                 <span className="aws-card__label">KMS Key</span>
                 <span className="aws-card__value mono">
-                  {awsDetails.kms_key_arn 
+                  {awsDetails.kms_key_arn
                     ? awsDetails.kms_key_arn.replace(/\d{12}/, '••••••••••••').replace(/key\/[a-f0-9\-]+/, 'key/••••••••-••••-••••-••••-••••••••••••')
                     : 'arn:aws:kms:••••••••••••'}
                 </span>
@@ -163,58 +163,58 @@ export default function SettingsPage({ user, onUpdateUser, onLogout }) {
           <div className="aws-card aws-card--disconnected">
             <div className="aws-card__cta" style={{ textAlign: 'left', alignItems: 'flex-start' }}>
               <h4 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Cloud size={20} className="aws-card__cta-icon" /> 
-                  Connect Your AWS Account
+                <Cloud size={20} className="aws-card__cta-icon" />
+                Connect Your AWS Account
               </h4>
               <p>Provide your AWS credentials. StackDrive will auto-provision S3 buckets (Quarantine/Secure) and a KMS Key directly in your account.</p>
-              
+
               <form onSubmit={handleConnect} style={{ width: '100%', marginTop: 'var(--space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label" style={{ fontSize: 'var(--text-xs)' }}>ACCESS KEY ID</label>
-                    <input 
-                        type="text" 
-                        className="form-input" 
-                        placeholder="AKIAIOSFODNN7EXAMPLE" 
-                        value={awsForm.access_key}
-                        onChange={(e) => setAwsForm({...awsForm, access_key: e.target.value})}
-                    />
+                  <label className="form-label" style={{ fontSize: 'var(--text-xs)' }}>ACCESS KEY ID</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="AKIAIOSFODNN7EXAMPLE"
+                    value={awsForm.access_key}
+                    onChange={(e) => setAwsForm({ ...awsForm, access_key: e.target.value })}
+                  />
                 </div>
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label" style={{ fontSize: 'var(--text-xs)' }}>SECRET ACCESS KEY</label>
-                    <input 
-                        type="password" 
-                        className="form-input" 
-                        placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" 
-                        value={awsForm.secret_key}
-                        onChange={(e) => setAwsForm({...awsForm, secret_key: e.target.value})}
-                    />
+                  <label className="form-label" style={{ fontSize: 'var(--text-xs)' }}>SECRET ACCESS KEY</label>
+                  <input
+                    type="password"
+                    className="form-input"
+                    placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+                    value={awsForm.secret_key}
+                    onChange={(e) => setAwsForm({ ...awsForm, secret_key: e.target.value })}
+                  />
                 </div>
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label" style={{ fontSize: 'var(--text-xs)' }}>REGION</label>
-                    <select 
-                        className="form-input" 
-                        value={awsForm.region}
-                        onChange={(e) => setAwsForm({...awsForm, region: e.target.value})}
-                    >
-                        <option value="us-east-1">us-east-1 (N. Virginia)</option>
-                        <option value="us-east-2">us-east-2 (Ohio)</option>
-                        <option value="us-west-2">us-west-2 (Oregon)</option>
-                        <option value="eu-west-1">eu-west-1 (Ireland)</option>
-                        <option value="ap-south-1">ap-south-1 (Mumbai)</option>
-                    </select>
+                  <label className="form-label" style={{ fontSize: 'var(--text-xs)' }}>REGION</label>
+                  <select
+                    className="form-input"
+                    value={awsForm.region}
+                    onChange={(e) => setAwsForm({ ...awsForm, region: e.target.value })}
+                  >
+                    <option value="us-east-1">us-east-1 (N. Virginia)</option>
+                    <option value="us-east-2">us-east-2 (Ohio)</option>
+                    <option value="us-west-2">us-west-2 (Oregon)</option>
+                    <option value="eu-west-1">eu-west-1 (Ireland)</option>
+                    <option value="ap-south-1">ap-south-1 (Mumbai)</option>
+                  </select>
                 </div>
                 <button
-                    type="submit"
-                    className="btn btn-primary"
-                    style={{ marginTop: 'var(--space-2)' }}
-                    disabled={connecting}
-                    id="connect-aws"
+                  type="submit"
+                  className="btn btn-primary"
+                  style={{ marginTop: 'var(--space-2)' }}
+                  disabled={connecting}
+                  id="connect-aws"
                 >
-                    {connecting ? (
+                  {connecting ? (
                     <><span className="spinner" /> Provisioning Infrastructure...</>
-                    ) : (
+                  ) : (
                     <><Cloud size={16} /> Provision AWS Account</>
-                    )}
+                  )}
                 </button>
               </form>
             </div>

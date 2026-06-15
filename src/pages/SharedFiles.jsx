@@ -60,7 +60,7 @@ export default function SharedFiles() {
     setLoadingAudit(true);
     try {
       const data = await api.getShareAudit(share.id);
-      setAuditLogs(data.audit || []);
+      setAuditLogs(data.audit || data.logs || []);
     } catch (err) {
       addToast('Failed to load access logs', 'error');
     } finally {
@@ -340,7 +340,7 @@ export default function SharedFiles() {
                     let icon = <History size={14} />;
                     let colorClass = 'audit-icon--info';
                     
-                    if (log.event === 'download') {
+                    if (log.event && log.event.includes('download')) {
                       icon = <Download size={14} />;
                       colorClass = 'audit-icon--success';
                     } else if (log.event.includes('wrong') || log.event.includes('fail') || log.event.includes('expired')) {

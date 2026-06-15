@@ -48,7 +48,7 @@ export default function SecurityPage() {
       finally { setLoading(false); }
     };
     fetch();
-    const interval = setInterval(fetch, 15000);
+    const interval = setInterval(fetch, 5000);
     return () => clearInterval(interval);
   }, []);
 

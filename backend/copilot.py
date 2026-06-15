@@ -29,8 +29,8 @@ def _find_file_by_name(user_id, name_query):
     q = name_query.strip().strip('"\'[]')
     if not q:
         return None
-    # Exact match first
-    f = File.query.filter_by(user_id=user_id, name=q).first()
+    # Exact match first (most recent)
+    f = File.query.filter_by(user_id=user_id, name=q).order_by(File.uploaded_at.desc()).first()
     if f:
         return f
     # Partial match (case-insensitive)
@@ -39,6 +39,67 @@ def _find_file_by_name(user_id, name_query):
         File.name.ilike(f'%{q}%')
     ).order_by(File.uploaded_at.desc()).all()
     return results[0] if results else None
+
+
+def _find_file_by_reference(user_id, message):
+    """
+    Advanced NLU file resolver. Handles casual references like:
+    'that exe', 'my pdf', 'the zip file', 'last file', 'first one',
+    'the blocked file', 'the safe one', 'it', 'this file'
+    """
+    msg = message.lower()
+
+    # 1. Try explicit filename extraction first
+    filename = _extract_filename(message)
+    if filename:
+        f = _find_file_by_name(user_id, filename)
+        if f:
+            return f
+
+    # 2. Extension-based casual references ("that exe", "my pdf", "the zip")
+    ext_map = {
+        'exe': '.exe', 'pdf': '.pdf', 'zip': '.zip', 'doc': '.doc',
+        'docx': '.docx', 'xlsx': '.xlsx', 'pptx': '.pptx', 'csv': '.csv',
+        'txt': '.txt', 'py': '.py', 'js': '.js', 'sh': '.sh', 'bat': '.bat',
+        'png': '.png', 'jpg': '.jpg', 'jpeg': '.jpeg', 'gif': '.gif',
+        'mp4': '.mp4', 'rar': '.rar', '7z': '.7z', 'tar': '.tar',
+        'html': '.html', 'css': '.css', 'json': '.json', 'xml': '.xml',
+        'dll': '.dll', 'so': '.so', 'bin': '.bin', 'elf': '.elf',
+        'docm': '.docm', 'xlsm': '.xlsm', 'pptm': '.pptm', 'rtf': '.rtf',
+        'md': '.md', 'iso': '.iso', 'apk': '.apk', 'msi': '.msi',
+        'gz': '.gz', 'deb': '.deb', 'rpm': '.rpm', 'wav': '.wav', 'mp3': '.mp3',
+    }
+    for keyword, ext in ext_map.items():
+        if re.search(rf'\b{keyword}\b', msg):
+            f = File.query.filter(
+                File.user_id == user_id,
+                File.name.ilike(f'%{ext}')
+            ).order_by(File.uploaded_at.desc()).first()
+            if f:
+                return f
+
+    # 3. Status-based references ("the blocked file", "safe one", "failed file")
+    status_keywords = {
+        'blocked': 'blocked', 'rejected': 'blocked', 'failed': 'blocked',
+        'malicious': 'blocked', 'dangerous': 'blocked', 'threat': 'blocked',
+        'safe': 'safe', 'clean': 'safe', 'passed': 'safe', 'verified': 'safe',
+        'scanning': 'scanning', 'pending': 'quarantine',
+    }
+    for keyword, status in status_keywords.items():
+        if keyword in msg:
+            f = File.query.filter_by(user_id=user_id, status=status)\
+                .order_by(File.uploaded_at.desc()).first()
+            if f:
+                return f
+
+    # 4. Recency references ("last file", "latest", "recent", "just uploaded", "it", "this")
+    if any(k in msg for k in ['last', 'latest', 'recent', 'just uploaded',
+                               'my file', 'the file', 'this file', 'that file',
+                               ' it ', 'is it']):
+        return File.query.filter_by(user_id=user_id)\
+            .order_by(File.uploaded_at.desc()).first()
+
+    return None
 
 
 def _get_stages(file_id):
@@ -63,14 +124,21 @@ def _format_size(size_bytes):
 
 def _extract_filename(message):
     """Extract a filename from the user's message."""
-    # Pattern: "for [filename]" or "about filename.ext" or just "filename.ext"
     patterns = [
-        r'for\s+\[?([^\]]+?)\]?(?:\s|$|\?)',
-        r'(?:explain|about|is|check|find|search|show|details?\s+of)\s+["\']?([a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+)',
-        r'why\s+(?:was|is|did)\s+["\']?([a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+)',
-        r'([a-zA-Z0-9_\-]+\.[a-zA-Z0-9]{1,10})\s+(?:blocked|safe|detected|failed|file)',
+        # "for [filename]"
+        r'for\s+\[?([^\]]+?\.[a-zA-Z0-9]{1,10})\]?(?:\s|$|\?)',
+        # "explain what filename.ext is" / "what is filename.ext"
+        r'(?:explain\s+what|what\s+is|what\'s)\s+["\']?([a-zA-Z0-9_\-\.\(\)\s]+\.[a-zA-Z0-9]{1,10})\b',
+        # "explain/about/check filename.ext"
+        r'(?:explain|about|check|find|search|show|details?\s+of|tell\s+me\s+about)\s+["\']?([a-zA-Z0-9_\-\.\(\)\s]+\.[a-zA-Z0-9]{1,10})\b',
+        # "why was filename.ext blocked"
+        r'why\s+(?:was|is|did|got)\s+["\']?([a-zA-Z0-9_\-\.\(\)\s]+\.[a-zA-Z0-9]{1,10})\b',
+        # filename.ext blocked/safe/etc
+        r'([a-zA-Z0-9_\-\.\(\)]+\.[a-zA-Z0-9]{1,10})\s+(?:blocked|safe|detected|failed|file|dangerous)',
+        # "filename.ext" (quoted)
         r'"([^"]+\.[a-zA-Z0-9]+)"',
-        r'([a-zA-Z0-9_\-]+\.(?:zip|exe|pdf|py|js|sh|bat|doc|docx|xlsx|csv|txt|png|jpg))',
+        # Catch-all: any word with a known file extension anywhere in the message
+        r'([a-zA-Z0-9_\-\.\(\)\s]+\.(?:zip|exe|pdf|py|js|sh|bat|doc|docx|docm|xlsx|xlsm|csv|txt|png|jpg|jpeg|gif|md|html|css|json|xml|rar|7z|tar|gz|dll|so|bin|elf|pptx|pptm|rtf|mp4|mp3|wav|iso|apk|msi|deb|rpm))\b',
     ]
     for pat in patterns:
         m = re.search(pat, message, re.IGNORECASE)
@@ -80,35 +148,53 @@ def _extract_filename(message):
 
 
 def _detect_intent(message):
-    """Classify user intent from their message."""
-    msg = message.lower()
+    """Classify user intent from their message with NLU-grade matching."""
+    msg = message.lower().strip()
+
+    # Greetings and casual openers
+    if re.match(r'^(hi|hey|hello|yo|sup|hola|greetings|good morning|good evening|good afternoon)\b', msg):
+        return 'greeting'
+    if re.match(r'^(thanks|thank you|thx|ty|cheers|appreciate|cool|nice|got it|ok thanks)\b', msg):
+        return 'thanks'
+    if re.match(r'^(help|what can you do|commands|menu|options)\b', msg):
+        return 'help'
 
     if any(k in msg for k in ['report', 'generate report', 'pdf report', 'export', 'incident report', 'soc report']):
         return 'report'
-    if any(k in msg for k in ['compare', 'vs', 'versus', 'difference between', 'most dangerous', 'rank', 'ranking']):
+    if any(k in msg for k in ['compare', 'vs', 'versus', 'difference between', 'most dangerous', 'rank', 'ranking',
+                               'which file', 'worst file', 'riskiest']):
         return 'compare_files'
-    if any(k in msg for k in ['timeline', 'attack timeline', 'sequence', 'what happened step']):
+    if any(k in msg for k in ['timeline', 'attack timeline', 'sequence', 'what happened step', 'walk me through',
+                               'step by step', 'what happened']):
         return 'timeline'
-    if any(k in msg for k in ['why was', 'why did', 'why is', 'blocked', 'failed', 'detected', 'caught']):
+    if any(k in msg for k in ['why was', 'why did', 'why is', 'why got', 'blocked', 'failed', 'detected', 'caught',
+                               'rejected', 'not allowed', 'stopped', 'quarantine']):
         return 'why_blocked'
-    if any(k in msg for k in ['how dangerous', 'risk', 'how risky', 'threat level', 'severity']):
+    if any(k in msg for k in ['how dangerous', 'risk', 'how risky', 'threat level', 'severity', 'how bad',
+                               'is it dangerous', 'should i worry', 'concern']):
         return 'risk_assess'
-    if any(k in msg for k in ['what should i do', 'recommend', 'suggestion', 'next step', 'advice']):
+    if any(k in msg for k in ['what should i do', 'recommend', 'suggestion', 'next step', 'advice',
+                               'what now', 'what next', 'action']):
         return 'recommend'
-    if any(k in msg for k in ['explain', 'what is this file', 'tell me about', 'is it safe',
-                               'is my file safe', 'details of', 'analyze', 'scan result',
-                               'ok', 'okay', 'fine', 'passed', 'good', 'bad', 'check']):
+    if any(k in msg for k in ['explain', 'what is this file', 'tell me about', 'is it safe', 'is it ok',
+                               'is my file safe', 'is my file ok', 'details of', 'analyze', 'scan result',
+                               'did it pass', 'is it clean', 'any issues', 'any problem',
+                               'what about', 'show me', 'check']):
         return 'explain_file'
-    if any(k in msg for k in ['find', 'search', 'show me', 'locate']):
+    if any(k in msg for k in ['find', 'search', 'locate', 'where is']):
         return 'search_file'
-    if any(k in msg for k in ['dashboard', 'summary', 'how many', 'overview', 'stats', 'status']):
+    if any(k in msg for k in ['dashboard', 'summary', 'how many', 'overview', 'stats', 'status',
+                               'all files', 'my files', 'total files', 'file count']):
         return 'dashboard'
+    if any(k in msg for k in ['what is stackdrive', 'about stackdrive', 'how does stackdrive',
+                               'tell me about stackdrive', 'what is this app', 'what is this platform']):
+        return 'about'
     if any(k in msg for k in ['entropy', 'clamav', 'sandbox', 'virustotal', 'heuristic', 'ml-kem',
                                'kyber', 'quantum', 'aes', 'kms', 'reverse shell', 'malware',
-                               'what is a', 'what does', 'how does']):
+                               'what is a', 'what does', 'how does', 'yara', 'strace', 'ml-dsa',
+                               'dilithium', 'hkdf', 'zero trust', 'zero-trust', 'dlp', 'watermark',
+                               'zip bomb', 'polyglot', 'path traversal']):
         return 'security_concept'
-    if any(k in msg for k in ['what is stackdrive', 'about stackdrive', 'how does stackdrive']):
-        return 'about'
 
     # If message contains a filename, try to explain it
     if _extract_filename(message):
@@ -286,6 +372,26 @@ def _risk_assessment(file_obj, stages):
     else:
         lines.append("No significant risk indicators detected.")
 
+    lines.append("")
+    lines.append("**Why this risk score?**")
+
+    if risk < 30:
+        lines.append(f"A score of {risk}/100 is LOW. The file passed all scan layers without triggering meaningful threat signatures. The small score contribution typically comes from minor flags like elevated entropy or uncommon file structure — not actual malicious behavior.")
+    elif risk < 60:
+        lines.append(f"A score of {risk}/100 is MEDIUM. The file passed most layers but exhibited traits common in potentially unwanted software — such as high entropy, unusual process behavior, or structural anomalies. It's not confirmed malware, but warrants caution.")
+    elif risk < 85:
+        lines.append(f"A score of {risk}/100 is HIGH. Multiple security layers flagged this file. It either matched known threat signatures, exhibited suspicious runtime behavior, or had characteristics typical of obfuscated malware.")
+    else:
+        lines.append(f"A score of {risk}/100 is CRITICAL. The file definitively matched malware signatures or actively exhibited malicious behavior (reverse shell, process injection, etc.) in the sandbox.")
+
+    # Per-indicator explanations
+    if file_obj.sandbox_entropy and file_obj.sandbox_entropy > 7.0:
+        lines.append(f"\n• **High entropy ({file_obj.sandbox_entropy:.2f})** contributes to the risk score because files with very random data often hide malicious code through encryption or packing. A score above 7.2 triggers a risk penalty.")
+
+    for s in stages:
+        if s.status == 'fail':
+            lines.append(f"\n• **Layer {s.stage_order} failure ({s.name})** is the primary risk driver. When a scan layer fails, StackDrive applies a significant score penalty because a failed layer means a detected threat or scan interruption.")
+
     return "\n".join(lines)
 
 
@@ -299,12 +405,14 @@ def _generate_report(file_obj, stages, user_email):
     lines = [
         f"# 🛡️ StackDrive Security Report",
         f"**File:** {file_obj.name}  |  **Generated:** {now}  |  **Requested by:** {user_email}",
+        "",
         "---",
+        "",
         "## 📋 Executive Summary",
-        f"**Verdict:** {verdict}",
-        f"**Risk Score:** {risk}/100 ({level})",
-        f"**File Size:** {file_obj.size_display}",
-        f"**Upload Time:** {file_obj.uploaded_at.strftime('%d %b %Y, %I:%M %p UTC') if file_obj.uploaded_at else 'N/A'}",
+        f"- **Verdict:** {verdict}",
+        f"- **Risk Score:** {risk}/100 ({level})",
+        f"- **File Size:** {file_obj.size_display}",
+        f"- **Upload Time:** {file_obj.uploaded_at.strftime('%d %b %Y, %I:%M %p UTC') if file_obj.uploaded_at else 'N/A'}",
         "",
         "## 🔍 File Identity",
         f"- **Original Filename:** {file_obj.name}",
@@ -446,9 +554,15 @@ def _security_concept(message):
         ),
         'sandbox': (
             "**Behavioral Sandbox** (Layer 4) runs files inside a locked-down Docker container with:\n\n"
-            "• No network access\n• 256MB memory limit\n• Read-only filesystem\n• All capabilities dropped\n\n"
+            "• No network access\n• 512MB memory limit\n• Read-only filesystem\n• All capabilities dropped\n\n"
             "It uses `strace` to monitor system calls (execve, connect, fork) and detects "
             "malicious behaviors like reverse shells, privilege escalation, and data exfiltration."
+        ),
+        'strace': (
+            "**strace** is a Linux diagnostic tool that intercepts every system call a program makes.\n\n"
+            "StackDrive uses it in the Layer 4 sandbox to trace dangerous calls like `execve` (run programs), "
+            "`connect` (network access), `fork` (spawn processes), and `open` (file access). "
+            "Think of it as a CCTV camera recording every action a program takes at the OS level."
         ),
         'reverse shell': (
             "A **reverse shell** is when malware connects back to an attacker's server and provides "
@@ -457,13 +571,27 @@ def _security_concept(message):
             "IPs combined with `execve('/bin/sh')` — the classic reverse shell pattern."
         ),
         'ml-kem': (
-            "**ML-KEM-768** (formerly Kyber) is a post-quantum key encapsulation mechanism.\n\n"
+            "**ML-KEM-768** (formerly Kyber) is a NIST-standardized post-quantum key encapsulation mechanism.\n\n"
             "It protects encryption keys against future quantum computer attacks. StackDrive combines "
-            "it with AES-256-GCM and AWS KMS for hybrid encryption that's secure against both "
-            "classical and quantum threats."
+            "it with AES-256-GCM and AWS KMS using HKDF key derivation for hybrid encryption that's "
+            "secure against both classical and quantum threats."
         ),
-        'kyber': None,  # handled by ml-kem
-        'quantum': None,
+        'ml-dsa': (
+            "**ML-DSA-65** (formerly Dilithium) is a NIST-standardized post-quantum digital signature algorithm.\n\n"
+            "StackDrive uses it to sign encrypted file payloads. During decryption, the signature is "
+            "verified to prove the file hasn't been tampered with — even by someone with access to the storage. "
+            "It's like a quantum-proof wax seal on a letter."
+        ),
+        'dilithium': None,  # redirects to ml-dsa
+        'kyber': None,  # redirects to ml-kem
+        'quantum': None,  # redirects to ml-kem
+        'hkdf': (
+            "**HKDF** (HMAC-based Key Derivation Function) is used by StackDrive to combine two key sources "
+            "into one strong AES-256 encryption key.\n\n"
+            "It mixes the AWS KMS data key with the ML-KEM-768 shared secret using SHA-256, producing "
+            "a hybrid key that requires both classical KMS and post-quantum components to reconstruct. "
+            "This ensures that breaking one algorithm alone isn't enough."
+        ),
         'virustotal': (
             "**VirusTotal** (Layer 1) checks your file's SHA-256 hash against 70+ antivirus engines.\n\n"
             "If any engines flag the hash, StackDrive reports how many detected it and the malware name. "
@@ -472,14 +600,65 @@ def _security_concept(message):
         'heuristic': (
             "**Heuristic Analysis** (Layer 2) examines file structure for suspicious patterns:\n\n"
             "• Hidden executables inside archives\n• Path traversal attacks (../)\n"
-            "• Obfuscated filenames\n• Zip bombs (extreme compression ratios)\n"
-            "• Excessive file counts\n• Suspicious MIME type mismatches"
+            "• Obfuscated filenames and double extensions\n• Zip bombs (extreme compression ratios)\n"
+            "• Polyglot file detection\n• Suspicious MIME type mismatches\n• Custom YARA rule matching"
         ),
+        'yara': (
+            "**YARA rules** are pattern-matching rules used in StackDrive's Layer 2 to detect malware.\n\n"
+            "They work like search warrants — each rule defines specific byte patterns, strings, or "
+            "conditions that indicate malicious behavior. StackDrive ships custom rules for detecting "
+            "obfuscated scripts, embedded executables, and persistence mechanisms."
+        ),
+        'zip bomb': (
+            "A **ZIP bomb** is a malicious archive designed to crash scanners by expanding to enormous sizes.\n\n"
+            "A tiny 42KB file can decompress to over 4.5 petabytes. StackDrive detects these in Layer 2 "
+            "by checking the compression ratio (blocked if > 100:1) and the absolute uncompressed size "
+            "(blocked if > 2GB)."
+        ),
+        'polyglot': (
+            "A **polyglot file** is a file that's valid in two or more formats simultaneously — "
+            "like a file that's both a valid PDF and a valid ZIP.\n\n"
+            "Attackers use this to sneak malware past scanners that only check the file extension. "
+            "StackDrive's Layer 2 detects polyglots by comparing magic bytes against the declared MIME type."
+        ),
+        'path traversal': (
+            "**Path traversal** is an attack where archive entries contain `../` sequences to escape "
+            "the extraction directory and overwrite system files.\n\n"
+            "For example, a ZIP file might contain `../../../etc/passwd`. StackDrive's Layer 2 "
+            "blocks any archive entry with path traversal patterns before extraction."
+        ),
+        'zero trust': (
+            "**Zero-trust** means StackDrive never assumes a file is safe based on who uploaded it.\n\n"
+            "Every file — regardless of source — goes through all 4 security layers. If any scanning "
+            "engine is offline, the file is blocked (fail-closed). No plaintext encryption keys are ever "
+            "stored in the database, logs, or URLs. Trust is verified, never assumed."
+        ),
+        'zero-trust': None,  # redirects to zero trust
+        'dlp': (
+            "**Data Loss Prevention (DLP)** in StackDrive includes real-time watermarking.\n\n"
+            "When a file is downloaded via a share link, PDFs get a diagonal watermark stamped with "
+            "the downloader's email address, and text files get an appended ownership marker. "
+            "This traces any leaked files back to the person who downloaded them."
+        ),
+        'watermark': None,  # redirects to dlp
         'aes': (
             "**AES-256-GCM** is the symmetric encryption algorithm StackDrive uses.\n\n"
             "It provides both confidentiality (encryption) and integrity (authentication tag). "
             "The 256-bit key is generated by AWS KMS and never stored in plaintext — "
             "this is the zero-trust architecture."
+        ),
+        'kms': (
+            "**AWS KMS** (Key Management Service) generates and protects StackDrive's encryption keys.\n\n"
+            "When a file is encrypted, KMS generates a unique data encryption key (DEK). The plaintext DEK "
+            "encrypts the file, then KMS encrypts the DEK itself (envelope encryption). The plaintext DEK "
+            "is immediately wiped from memory — only the encrypted version is stored in the database."
+        ),
+        'malware': (
+            "**Malware** is any software intentionally designed to cause damage — viruses, trojans, "
+            "ransomware, worms, spyware, and more.\n\n"
+            "StackDrive's 4-layer pipeline catches malware through hash reputation (Layer 1), "
+            "structural analysis (Layer 2), signature matching (Layer 3), and runtime behavior monitoring "
+            "(Layer 4). Files that exhibit malicious behavior are blocked and permanently deleted."
         ),
     }
     for key, answer in concepts.items():
@@ -511,9 +690,10 @@ def _about_stackdrive():
 
 # ── Main Copilot Handler ──────────────────────────────────────
 
-def handle_copilot_message(user_id, user_message):
+def handle_copilot_message(user_id, user_message, selected_file_id=None):
     """
     Main copilot handler. Detects intent, looks up files, generates response.
+    Uses advanced NLU file resolution for casual references and selected files.
     Returns: reply string
     """
     intent = _detect_intent(user_message)
@@ -523,15 +703,37 @@ def handle_copilot_message(user_id, user_message):
     user_obj = User.query.get(user_id)
     user_email = user_obj.email if user_obj else 'unknown'
 
-    # File-related intents need a file object
-    file_obj = None
-    stages = []
-    if filename:
-        file_obj = _find_file_by_name(user_id, filename)
-    if file_obj:
-        stages = _get_stages(file_obj.id)
+    # ── Greeting / Thanks / Help (no file lookup needed) ──
+    if intent == 'greeting':
+        total = File.query.filter_by(user_id=user_id).count()
+        blocked = File.query.filter_by(user_id=user_id, status='blocked').count()
+        if total == 0:
+            return "Hey! 👋 I'm **StackDrive Bot**, your AI security analyst. Upload a file and I'll walk you through every scan result, risk score, and threat detected."
+        elif blocked > 0:
+            return f"Hey! 👋 You have **{total} files** uploaded, with **{blocked} blocked threat(s)**. Ask me about any file — try *\"why was it blocked?\"* or *\"dashboard summary\"*."
+        else:
+            return f"Hey! 👋 You have **{total} files** uploaded, all clear so far. Ask me anything — try *\"is my file safe?\"*, *\"compare my files\"*, or *\"what is entropy?\"*."
 
-    # Route to handler
+    if intent == 'thanks':
+        return "You're welcome! 🛡️ I'm here whenever you need a scan breakdown, risk assessment, or security explanation. Just ask!"
+
+    if intent == 'help':
+        return (
+            "I'm your **StackDrive Bot**. Here's what I can do:\n\n"
+            "🔍 **\"Explain [filename]\"** — full scan breakdown\n"
+            "🚫 **\"Why was [filename] blocked?\"** — threat explanation\n"
+            "⚠ **\"How dangerous is [filename]?\"** — risk assessment\n"
+            "📋 **\"Generate report for [filename]\"** — security report\n"
+            "📅 **\"Show timeline for [filename]\"** — event sequence\n"
+            "📊 **\"Dashboard summary\"** — your account overview\n"
+            "🏆 **\"Compare my files\"** — rank files by risk\n"
+            "🧭 **\"What should I do next?\"** — recommendations\n"
+            "🧠 **\"What is entropy?\"** — security concepts\n\n"
+            "You can also say things like *\"is that exe safe?\"*, *\"what about the blocked file?\"*, "
+            "or *\"tell me about my last upload\"* — I understand casual references!"
+        )
+
+    # ── Non-file intents ──
     if intent == 'dashboard':
         return _dashboard_summary(user_id)
 
@@ -546,20 +748,56 @@ def handle_copilot_message(user_id, user_message):
         if answer:
             return answer
 
+    # ── File-related intents — use advanced NLU resolver ──
+    file_obj = None
+    stages = []
+    found_via_selected = False
+
+    # Step 1: Try explicit filename match
+    if filename:
+        file_obj = _find_file_by_name(user_id, filename)
+
+    # Step 2: If user has a file selected in the UI, ALWAYS prefer it when no explicit filename was mentioned
+    if not file_obj and selected_file_id:
+        file_obj = File.query.filter_by(user_id=user_id, id=selected_file_id).first()
+        if file_obj:
+            # Only override if the message doesn't explicitly mention a DIFFERENT file by name
+            stages = _get_stages(file_obj.id)
+            found_via_selected = True
+
+    # Step 3: Try NLU reference matching ("that exe", "the blocked file", etc.)
+    if not file_obj:
+        file_obj = _find_file_by_reference(user_id, user_message)
+
+    if file_obj and not stages:
+        stages = _get_stages(file_obj.id)
+
     if intent in ('explain_file', 'search_file', 'why_blocked', 'risk_assess', 'report', 'timeline'):
         if not file_obj:
             if filename:
-                return f"I couldn't find a file named **\"{filename}\"** in your account. Please check the exact name or try a partial match."
-            # Try to use the most recent file
-            file_obj = File.query.filter_by(user_id=user_id)\
-                .order_by(File.uploaded_at.desc()).first()
-            if file_obj:
-                stages = _get_stages(file_obj.id)
-                prefix = f"(Using your most recent file: **{file_obj.name}**)\n\n"
-            else:
-                return "You haven't uploaded any files yet. Upload a file first, then ask me about it!"
+                return f"I couldn't find a file matching **\"{filename}\"** in your account. Try a partial name or ask *\"dashboard summary\"* to see all your files."
+            
+            # Prioritize selected file ID if user has selected one in the dropdown
+            if selected_file_id:
+                file_obj = File.query.filter_by(user_id=user_id, id=selected_file_id).first()
+                if file_obj:
+                    stages = _get_stages(file_obj.id)
+                    found_via_selected = True
+            
+            # Last resort: most recent file
+            if not file_obj:
+                file_obj = File.query.filter_by(user_id=user_id)\
+                    .order_by(File.uploaded_at.desc()).first()
+                if file_obj:
+                    stages = _get_stages(file_obj.id)
+                    prefix = f"(Answering about your most recent file: **{file_obj.name}**)\n\n"
+                else:
+                    return "You haven't uploaded any files yet. Upload a file first, then ask me about it!"
         else:
             prefix = ""
+
+        if found_via_selected and file_obj:
+            prefix = f"(Answering about your currently selected file: **{file_obj.name}**)\n\n"
 
         if intent == 'explain_file' or intent == 'search_file':
             return prefix + _explain_file(file_obj, stages)
@@ -572,27 +810,54 @@ def handle_copilot_message(user_id, user_message):
         elif intent == 'timeline':
             return prefix + _threat_timeline(file_obj, stages)
 
-    # General / unmatched — provide helpful guidance
+    # ── General fallback — attempt file-based answer before showing help ──
+    if file_obj:
+        return _explain_file(file_obj, stages)
+
+    # Final fallback: help menu
+    total = File.query.filter_by(user_id=user_id).count()
+    if total > 0:
+        return (
+            "I'm not sure what you mean, but I'm here to help! Try:\n\n"
+            "• *\"Is my file safe?\"* — scan results for your latest upload\n"
+            "• *\"Why was it blocked?\"* — threat explanation\n"
+            "• *\"Dashboard summary\"* — overview of all your files\n"
+            "• *\"What is entropy?\"* — security concept explanation\n\n"
+            "You can refer to files casually — *\"that exe\"*, *\"the blocked file\"*, or just the filename."
+        )
     return (
-        "I'm your **StackDrive Bot**. Here's what I can do:\n\n"
-        "🔍 **\"Explain [filename]\"** — full scan breakdown\n"
-        "🚫 **\"Why was [filename] blocked?\"** — threat explanation\n"
-        "⚠ **\"How dangerous is [filename]?\"** — risk assessment\n"
-        "📋 **\"Generate report for [filename]\"** — security report\n"
-        "📅 **\"Show timeline for [filename]\"** — event sequence\n"
-        "📊 **\"Dashboard summary\"** — your account overview\n"
-        "🏆 **\"Compare my files\"** — rank files by risk\n"
-        "🧭 **\"What should I do next?\"** — recommendations\n"
-        "🧠 **\"What is entropy?\"** — security concepts\n\n"
-        "Try asking about a specific file by name!"
+        "Hey! 👋 I'm **StackDrive Bot**, your AI security analyst.\n\n"
+        "Upload a file to get started — I'll explain every scan result, "
+        "flag threats, and answer any security questions you have."
     )
 
 
 # ── Gemini Integration ────────────────────────────────────────
 
-def _build_file_context(user_id):
+def _build_file_context(user_id, selected_file_id=None):
     """Build real file context for Gemini."""
     parts = []
+    
+    # 1. Selected file context (active UI selection)
+    if selected_file_id:
+        f = File.query.filter_by(user_id=user_id, id=selected_file_id).first()
+        if f:
+            stages = _get_stages(f.id)
+            stage_info = "; ".join([
+                f"Layer {s.stage_order} ({s.name}): {s.status} — {s.detail}" for s in stages
+            ])
+            sandbox = ""
+            if f.sandbox_status_detail:
+                sandbox = (f"\n  sandbox_entropy: {f.sandbox_entropy}"
+                           f"\n  sandbox_flags: {f.sandbox_flags or '[]'}"
+                           f"\n  sandbox_risk_score: {f.sandbox_risk_score}")
+            parts.append("[CURRENTLY_SELECTED_FILE]")
+            parts.append(
+                f"file_name: {f.name}\nsize: {f.size_display}\nstatus: {f.status}"
+                f"\nrisk: {f.risk}\nsha256: {f.sha256_hash or 'N/A'}"
+                f"\npipeline: {stage_info}{sandbox}"
+            )
+            parts.append("[/CURRENTLY_SELECTED_FILE]\n")
     files = File.query.filter_by(user_id=user_id)\
         .order_by(File.uploaded_at.desc()).limit(10).all()
     if files:
@@ -621,13 +886,13 @@ def _build_file_context(user_id):
     return "\n".join(parts)
 
 
-def call_gemini(user_id, user_message, system_prompt):
+def call_gemini(user_id, user_message, system_prompt, selected_file_id=None):
     """Call Gemini API with conversation history and full context. Returns reply or None."""
     api_key = os.environ.get('GEMINI_API_KEY', '').strip()
     if not api_key:
         return None
     try:
-        context = _build_file_context(user_id)
+        context = _build_file_context(user_id, selected_file_id)
         system_with_context = f"{system_prompt}\n\n{context}"
 
         # Build conversation history
@@ -637,7 +902,7 @@ def call_gemini(user_id, user_message, system_prompt):
         history.append({"role": "user", "parts": [{"text": user_message}]})
         _conversation_history[user_id] = history[-20:]  # update immediately to avoid losing context
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
         resp = req.post(url, json={
             "system_instruction": {"parts": [{"text": system_with_context}]},
             "contents": history[-10:],  # last 10 turns only

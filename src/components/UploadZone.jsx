@@ -43,7 +43,7 @@ export default function UploadZone({ onUpload, disabled = false, useApi = false 
 
   const validateFile = (file) => {
     if (file.size > 500 * 1024 * 1024) {
-      setError('File exceeds 500MB limit.');
+      setError('File size limit exceeded.');
       setTimeout(() => setError(''), 3000);
       return false;
     }
@@ -211,7 +211,7 @@ export default function UploadZone({ onUpload, disabled = false, useApi = false 
           <p className="upload-zone__text">
             Drag & drop your file here
           </p>
-          <span className="upload-zone__hint">or click to browse · Max 500MB · All file types</span>
+          <span className="upload-zone__hint">or click to browse · All file types</span>
           <span className="upload-zone__hint upload-zone__hint--speed">
             <Zap size={12} /> Direct-to-S3 multipart upload · Parallel chunks
           </span>

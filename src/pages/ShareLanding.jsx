@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import api from '../services/api';
+import Modal from '../components/Modal';
 import { Lock, Download, AlertTriangle, ShieldCheck, Mail, Key, Eye, EyeOff } from 'lucide-react';
 
 export default function ShareLanding() {
@@ -13,6 +14,9 @@ export default function ShareLanding() {
   const [downloading, setDownloading] = useState(false);
   const [timeLeft, setTimeLeft] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [downloadWarning, setDownloadWarning] = useState(null);
+  const [showIntegrityModal, setShowIntegrityModal] = useState(false);
+  const [integrityReasons, setIntegrityReasons] = useState([]);
 
   // Fetch share metadata on mount
   useEffect(() => {
@@ -56,29 +60,51 @@ export default function ShareLanding() {
     return () => clearInterval(timer);
   }, [shareInfo]);
 
-  const handleDownload = async (e) => {
-    e.preventDefault();
-    if (!email) {
-      alert('Recipient email is required to access the shared file.');
-      return;
-    }
-    if (shareInfo.passwordProtected && !password) {
-      alert('This share link is password-protected. Please enter the password.');
-      return;
-    }
-
+  const triggerDownload = async (forceRecovery = false) => {
     setDownloading(true);
+    setDownloadWarning(null);
     try {
-      const blob = await api.downloadSharedFile(token, { password, email });
+      const result = await api.downloadSharedFile(token, { password, email, recovery: forceRecovery });
+      
+      if (result.integrityFailed) {
+        setIntegrityReasons(result.reasons || []);
+        setShowIntegrityModal(true);
+        setDownloading(false);
+        return;
+      }
+
+      const { blob, warning } = result;
+      let downloadName = shareInfo.fileName;
+      if (forceRecovery) {
+        const dotIdx = shareInfo.fileName.lastIndexOf('.');
+        if (dotIdx !== -1) {
+          downloadName = `${shareInfo.fileName.substring(0, dotIdx)}_corrupted${shareInfo.fileName.substring(dotIdx)}`;
+        } else {
+          downloadName = `${shareInfo.fileName}_corrupted`;
+        }
+        
+        // Show persistent warning banner
+        localStorage.setItem('recovery_banner_active', 'true');
+        window.dispatchEvent(new Event('storage'));
+        window.dispatchEvent(new Event('recovery_banner_update'));
+        
+        alert('⚠️ Recovery Copy Downloaded\n\nThis file failed integrity verification and may be corrupted or modified. Use with caution.');
+      } else if (warning) {
+        setDownloadWarning(warning);
+        alert(`SECURITY WARNING: The downloaded file appears to have been modified or tampered with:\n\n${warning.split('; ').map(w => '• ' + w).join('\n')}`);
+      }
+
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = shareInfo.fileName;
+      a.download = downloadName;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       
+      setShowIntegrityModal(false);
+
       // Decrement local download count
       setShareInfo(prev => {
         if (!prev) return null;
@@ -92,6 +118,19 @@ export default function ShareLanding() {
     } finally {
       setDownloading(false);
     }
+  };
+
+  const handleDownload = async (e) => {
+    e.preventDefault();
+    if (!email) {
+      alert('Recipient email is required to access the shared file.');
+      return;
+    }
+    if (shareInfo.passwordProtected && !password) {
+      alert('This share link is password-protected. Please enter the password.');
+      return;
+    }
+    await triggerDownload(false);
   };
 
   if (loading) {
@@ -400,6 +439,30 @@ export default function ShareLanding() {
           </button>
         </form>
 
+        {downloadWarning && (
+          <div style={{
+            background: 'rgba(239, 68, 68, 0.1)',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            borderRadius: '8px',
+            padding: '12px 16px',
+            marginTop: '20px',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '10px',
+            textAlign: 'left'
+          }}>
+            <AlertTriangle size={18} style={{ color: '#ef4444', flexShrink: 0, marginTop: '2px' }} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <span style={{ color: '#ef4444', fontWeight: 'bold', fontSize: '0.85rem' }}>Security Warning</span>
+              {downloadWarning.split('; ').map((warn, i) => (
+                <span key={i} style={{ color: '#fca5a5', fontSize: '0.8rem', lineHeight: '1.4' }}>
+                  • {warn}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Footer Info */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', marginTop: '28px' }}>
           <ShieldCheck size={16} style={{ color: '#10b981' }} />
@@ -408,6 +471,45 @@ export default function ShareLanding() {
           </span>
         </div>
       </div>
+
+      <Modal
+        isOpen={showIntegrityModal}
+        onClose={() => setShowIntegrityModal(false)}
+        title="⚠ Security Warning"
+        actions={
+          <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', width: '100%' }}>
+            <button className="btn btn-secondary" onClick={() => setShowIntegrityModal(false)}>
+              Cancel Download
+            </button>
+            <button className="btn btn-danger" onClick={() => triggerDownload(true)}>
+              Download Recovery Copy
+            </button>
+          </div>
+        }
+      >
+        <div style={{ color: 'var(--text-primary)', padding: '10px 0' }}>
+          <p style={{ fontWeight: '600', color: '#ef4444', marginBottom: '14px', fontSize: '1.05rem' }}>
+            This file failed integrity verification.
+          </p>
+          <p style={{ fontSize: '0.9rem', marginBottom: '12px' }}>Possible causes:</p>
+          <ul style={{ margin: '0 0 16px 0', paddingLeft: '20px', fontSize: '0.9rem', color: '#94a3b8' }}>
+            <li style={{ marginBottom: '6px' }}>• Storage corruption</li>
+            <li style={{ marginBottom: '6px' }}>• Accidental modification</li>
+            <li style={{ marginBottom: '6px' }}>• Unauthorized tampering</li>
+          </ul>
+          <p style={{ fontSize: '0.9rem', color: '#94a3b8', fontStyle: 'italic' }}>
+            The file can no longer be considered trustworthy.
+          </p>
+          {integrityReasons.length > 0 && (
+            <div style={{ marginTop: '16px', padding: '10px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px' }}>
+              <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#ef4444', display: 'block', marginBottom: '4px' }}>Failure Reasons:</span>
+              <ul style={{ margin: 0, paddingLeft: '14px', fontSize: '0.8rem', color: 'white' }}>
+                {integrityReasons.map((r, i) => <li key={i}>{r}</li>)}
+              </ul>
+            </div>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -38,6 +38,9 @@ export default function FileHistory() {
   const [loading, setLoading] = useState(true);
   const [selectedFile, setSelectedFile] = useState(null);
   const [showDetail, setShowDetail] = useState(false);
+  const [integrityFailedFile, setIntegrityFailedFile] = useState(null);
+  const [integrityReasons, setIntegrityReasons] = useState([]);
+  const [showIntegrityModal, setShowIntegrityModal] = useState(false);
 
   // Advanced sharing states
   const [isSharing, setIsSharing] = useState(false);
@@ -107,17 +110,55 @@ export default function FileHistory() {
     setShowDetail(true);
   };
 
-  const handleDownload = async (file) => {
+  const handleDownload = async (file, forceRecovery = false) => {
     try {
-      const blob = await api.downloadFile(file.id);
+      const result = await api.downloadFile(file.id, forceRecovery);
+      
+      if (result.integrityFailed) {
+        setIntegrityFailedFile(file);
+        setIntegrityReasons(result.reasons || []);
+        setShowIntegrityModal(true);
+        setShowDetail(false);
+        return;
+      }
+
+      const { blob, warning } = result;
+      let downloadName = file.name;
+      if (forceRecovery) {
+        const dotIdx = file.name.lastIndexOf('.');
+        if (dotIdx !== -1) {
+          downloadName = `${file.name.substring(0, dotIdx)}_corrupted${file.name.substring(dotIdx)}`;
+        } else {
+          downloadName = `${file.name}_corrupted`;
+        }
+        
+        localStorage.setItem('recovery_banner_active', 'true');
+        window.dispatchEvent(new Event('storage'));
+        window.dispatchEvent(new Event('recovery_banner_update'));
+        
+        addToast(
+          '⚠️ Recovery Copy Downloaded. This file failed integrity verification and may be corrupted or modified. Use with caution.',
+          'warning',
+          10000
+        );
+      } else if (warning) {
+        const warningList = warning.split('; ');
+        warningList.forEach(warn => {
+          addToast(`SECURITY WARNING: ${warn}`, 'warning', 10000);
+        });
+      } else {
+        addToast('Download started', 'success');
+      }
+
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = file.name;
+      a.download = downloadName;
       a.click();
       URL.revokeObjectURL(url);
-      addToast('Download started', 'success');
       setShowDetail(false);
+      setShowIntegrityModal(false);
+      fetchFiles();
     } catch (err) {
       addToast(err.message || 'Download failed', 'error');
     }
@@ -658,6 +699,45 @@ export default function FileHistory() {
             )}
           </div>
         )}
+      </Modal>
+
+      <Modal
+        isOpen={showIntegrityModal}
+        onClose={() => setShowIntegrityModal(false)}
+        title="⚠ Security Warning"
+        actions={
+          <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', width: '100%' }}>
+            <button className="btn btn-secondary" onClick={() => setShowIntegrityModal(false)}>
+              Cancel Download
+            </button>
+            <button className="btn btn-danger" onClick={() => handleDownload(integrityFailedFile, true)}>
+              Download Recovery Copy
+            </button>
+          </div>
+        }
+      >
+        <div style={{ color: 'var(--text-primary)', padding: '10px 0' }}>
+          <p style={{ fontWeight: '600', color: 'var(--color-threat, #ef4444)', marginBottom: '14px', fontSize: '1.05rem' }}>
+            This file failed integrity verification.
+          </p>
+          <p style={{ fontSize: '0.9rem', marginBottom: '12px' }}>Possible causes:</p>
+          <ul style={{ margin: '0 0 16px 0', paddingLeft: '20px', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+            <li style={{ marginBottom: '6px' }}>• Storage corruption</li>
+            <li style={{ marginBottom: '6px' }}>• Accidental modification</li>
+            <li style={{ marginBottom: '6px' }}>• Unauthorized tampering</li>
+          </ul>
+          <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+            The file can no longer be considered trustworthy.
+          </p>
+          {integrityReasons.length > 0 && (
+            <div style={{ marginTop: '16px', padding: '10px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px' }}>
+              <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: 'var(--color-threat, #ef4444)', display: 'block', marginBottom: '4px' }}>Failure Reasons:</span>
+              <ul style={{ margin: 0, paddingLeft: '14px', fontSize: '0.8rem', color: 'var(--text-primary)' }}>
+                {integrityReasons.map((r, i) => <li key={i}>{r}</li>)}
+              </ul>
+            </div>
+          )}
+        </div>
       </Modal>
     </div>
   );

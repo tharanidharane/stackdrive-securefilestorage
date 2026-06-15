@@ -4,6 +4,8 @@ import api from '../services/api';
 import './AICopilot.css';
 import html2pdf from 'html2pdf.js';
 import { marked } from 'marked';
+import CopilotBot3D from './CopilotBot3D';
+import WelcomeBot3D from './WelcomeBot3D';
 
 /**
  * StackDrive AI Security Copilot
@@ -34,6 +36,47 @@ const LOADING_STAGES = [
   'Running analysis...',
   'Composing response...',
 ];
+
+function RobotAvatar({ size = 32, id }) {
+  return (
+    <svg 
+      width={size} 
+      height={size} 
+      viewBox="0 0 40 40" 
+      fill="none" 
+      xmlns="http://www.w3.org/2000/svg"
+      className={`robot-avatar robot-avatar-${id}`}
+    >
+      {/* Head shape: rounded rectangle */}
+      <rect x="6" y="8" width="28" height="22" rx="5" 
+            fill={`url(#avatarGrad-${id})`} stroke="rgba(59,130,246,0.5)" strokeWidth="1"/>
+
+      {/* Left eye: cyan glow rectangle */}
+      <rect x="10" y="15" width="8" height="4" rx="1.5" fill="#06b6d4" className="robot-eye-left" />
+
+      {/* Right eye */}
+      <rect x="22" y="15" width="8" height="4" rx="1.5" fill="#06b6d4" className="robot-eye-right" />
+
+      {/* Mouth: segmented line (3 short rects = "pixel" mouth) */}
+      <rect x="13" y="23" width="3" height="2" rx="0.5" fill="rgba(148,163,184,0.6)"/>
+      <rect x="18.5" y="23" width="3" height="2" rx="0.5" fill="rgba(148,163,184,0.6)"/>
+      <rect x="24" y="23" width="3" height="2" rx="0.5" fill="rgba(148,163,184,0.6)"/>
+
+      {/* Antenna base + tip */}
+      <rect x="19" y="3" width="2" height="6" rx="1" fill="#6366f1"/>
+      <circle cx="20" cy="2.5" r="2" fill="#06b6d4" 
+              style={{ filter: "drop-shadow(0 0 3px #06b6d4)" }}/>
+
+      {/* Gradient def */}
+      <defs>
+        <linearGradient id={`avatarGrad-${id}`} x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#1e3a5f"/>
+          <stop offset="100%" stopColor="#1e1b4b"/>
+        </linearGradient>
+      </defs>
+    </svg>
+  );
+}
 
 export default function AICopilot() {
   const [isOpen, setIsOpen] = useState(false);
@@ -103,7 +146,8 @@ export default function AICopilot() {
       if (
         chatRef.current &&
         !chatRef.current.contains(e.target) &&
-        !e.target.closest('.copilot-floating-btn')
+        !e.target.closest('.copilot-floating-btn') &&
+        !e.target.closest('.bot3d-wrapper')
       ) {
         setIsOpen(false);
       }
@@ -121,7 +165,7 @@ export default function AICopilot() {
     setIsLoading(true);
 
     try {
-      const data = await api.sendCopilotMessage(userMessage);
+      const data = await api.sendCopilotMessage(userMessage, selectedFileId);
       setMessages(prev => [...prev, {
         role: 'bot',
         content: data.reply || 'I couldn\'t process that request. Please try again.',
@@ -134,7 +178,7 @@ export default function AICopilot() {
     } finally {
       setIsLoading(false);
     }
-  }, [isLoading]);
+  }, [isLoading, selectedFileId]);
 
   const handleSend = () => sendMessage(input);
 
@@ -149,7 +193,11 @@ export default function AICopilot() {
 
   const handleNewChat = async () => {
     setMessages([]);
-    try { await api.clearCopilotHistory(); } catch {}
+    try {
+      await api.clearCopilotHistory();
+    } catch (err) {
+      console.warn('Failed to clear history:', err);
+    }
   };
 
   const handleCopyMessage = (text, idx) => {
@@ -167,21 +215,188 @@ export default function AICopilot() {
     setIsDownloading(true);
     try {
       const markdownText = await api.downloadCopilotReportData(selectedFileId);
-      const htmlContent = marked.parse(markdownText);
+      const rawHtml = marked.parse(markdownText);
       
+      const sections = rawHtml.split('<h2>');
+      let bodyHtml = '';
+      if (sections.length > 1) {
+        for (let i = 1; i < sections.length; i++) {
+          bodyHtml += `<div class="report-card"><h2>${sections[i]}</div>`;
+        }
+      } else {
+        bodyHtml = rawHtml;
+      }
+
       const container = document.createElement('div');
+      container.className = 'report-container';
       container.innerHTML = `
-        <div style="font-family: 'Inter', sans-serif; padding: 40px; color: #1e293b; max-width: 800px; margin: 0 auto; line-height: 1.6;">
-          <div style="border-bottom: 2px solid #3b82f6; padding-bottom: 10px; margin-bottom: 20px;">
-            <h1 style="color: #0f172a; font-size: 24px; margin: 0;">🛡️ StackDrive Security Report</h1>
-            <p style="color: #64748b; font-size: 14px; margin: 5px 0 0 0;">Generated on ${new Date().toLocaleString()}</p>
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+          
+          .report-container {
+            font-family: 'Inter', sans-serif;
+            color: #1e293b;
+            max-width: 800px;
+            margin: 0 auto;
+            line-height: 1.6;
+            padding: 20px;
+            background-color: #ffffff;
+          }
+          
+          .report-header {
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 15px;
+            margin-bottom: 25px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          }
+          
+          .report-header-title {
+            color: #0f172a;
+            font-size: 22px;
+            font-weight: 700;
+            margin: 0;
+            letter-spacing: -0.02em;
+          }
+          
+          .report-header-subtitle {
+            color: #64748b;
+            font-size: 12px;
+            margin-top: 5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+          }
+          
+          .report-header-dot {
+            width: 4px;
+            height: 4px;
+            background-color: #cbd5e1;
+            border-radius: 50%;
+            display: inline-block;
+          }
+          
+          .badge-safe {
+            background-color: #dcfce7;
+            color: #15803d;
+            border: 1px solid #bbf7d0;
+            padding: 5px 12px;
+            border-radius: 9999px;
+            font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            display: inline-block;
+          }
+          
+          .badge-blocked {
+            background-color: #fee2e2;
+            color: #b91c1c;
+            border: 1px solid #fecaca;
+            padding: 5px 12px;
+            border-radius: 9999px;
+            font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            display: inline-block;
+          }
+          
+          .report-card {
+            page-break-inside: avoid;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.03);
+          }
+          
+          .report-card h2 {
+            color: #0f172a;
+            font-size: 16px;
+            font-weight: 600;
+            margin-top: 0;
+            margin-bottom: 14px;
+            border-bottom: 1.5px solid #f1f5f9;
+            padding-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+          }
+          
+          .report-card h3 {
+            color: #334155;
+            font-size: 13px;
+            font-weight: 600;
+            margin-top: 14px;
+            margin-bottom: 6px;
+          }
+          
+          .report-card p {
+            font-size: 13px;
+            margin-top: 0;
+            margin-bottom: 8px;
+            color: #475569;
+          }
+          
+          .report-card ul {
+            margin: 0;
+            padding-left: 20px;
+          }
+          
+          .report-card li {
+            font-size: 12.5px;
+            margin-bottom: 5px;
+            color: #475569;
+          }
+          
+          .report-card strong {
+            color: #0f172a;
+          }
+          
+          .report-card code {
+            font-family: 'JetBrains Mono', monospace;
+            background-color: #f1f5f9;
+            padding: 2px 5px;
+            border-radius: 4px;
+            font-size: 11.5px;
+            color: #0f172a;
+          }
+          
+          .report-footer {
+            margin-top: 30px;
+            padding-top: 15px;
+            border-top: 1px solid #e2e8f0;
+            text-align: center;
+            color: #94a3b8;
+            font-size: 10px;
+          }
+        </style>
+        
+        <div class="report-header">
+          <div>
+            <h1 class="report-header-title">🛡️ StackDrive Security Report</h1>
+            <div class="report-header-subtitle">
+              <span>File: <strong>${selectedFile.name}</strong></span>
+              <span class="report-header-dot"></span>
+              <span>Generated: <strong>${new Date().toLocaleString()}</strong></span>
+            </div>
           </div>
-          <div style="font-size: 14px;">
-            ${htmlContent.replace(/✅/g, '<span style="color: #10b981;">✅</span>').replace(/🚫|❌/g, '<span style="color: #ef4444;">❌</span>')}
+          <div>
+            <span class="badge-${selectedFile.status === 'safe' ? 'safe' : 'blocked'}">
+              ${selectedFile.status === 'safe' ? 'Safe' : 'Blocked'}
+            </span>
           </div>
-          <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #e2e8f0; text-align: center; color: #94a3b8; font-size: 12px;">
-            Powered by StackDrive Bot
-          </div>
+        </div>
+        
+        <div style="font-size: 13px;">
+          ${bodyHtml.replace(/✅/g, '<span style="color: #10b981;">✅</span>').replace(/🚫|❌/g, '<span style="color: #ef4444;">❌</span>')}
+        </div>
+        
+        <div class="report-footer">
+          Powered by StackDrive Bot — Zero-Trust Secure File Platform
         </div>
       `;
       
@@ -228,15 +443,7 @@ export default function AICopilot() {
   return (
     <>
       {/* Floating Button */}
-      <button
-        className={`copilot-floating-btn ${isOpen ? 'open' : ''}`}
-        onClick={() => setIsOpen(!isOpen)}
-        aria-label="Open StackDrive Bot"
-        id="copilot-toggle"
-      >
-        {isOpen ? <X /> : <Bot />}
-        {!isOpen && <span className="copilot-ping" />}
-      </button>
+      <CopilotBot3D onClick={() => setIsOpen(!isOpen)} isOpen={isOpen} />
 
       {/* Chat Window */}
       {isOpen && (
@@ -244,9 +451,7 @@ export default function AICopilot() {
           {/* Header */}
           <div className="copilot-header">
             <div className="copilot-header-left">
-              <div className="copilot-header-icon">
-                <Sparkles size={14} />
-              </div>
+              <RobotAvatar size={28} id="header" />
               <div className="copilot-header-info">
                 <span className="copilot-header-title">StackDrive Bot</span>
                 <span className="copilot-header-subtitle">
@@ -286,11 +491,11 @@ export default function AICopilot() {
           {messages.length === 0 ? (
             <div className="copilot-welcome">
               <div className="copilot-welcome-glow" />
-              <div className="copilot-welcome-icon">
-                <Shield />
+              <div className="copilot-welcome-avatar-wrapper">
+                <WelcomeBot3D />
               </div>
               <h3>StackDrive Bot</h3>
-              <p>
+              <p className="copilot-welcome-subtitle">
                 I can explain scan results, tell you why files were blocked,
                 generate security reports, compare threats, and answer cybersecurity questions.
               </p>
@@ -320,7 +525,7 @@ export default function AICopilot() {
               {messages.map((msg, i) => (
                 <div key={i} className={`copilot-msg copilot-msg--${msg.role === 'user' ? 'user' : 'bot'}`}>
                   <div className="copilot-msg-avatar">
-                    {msg.role === 'bot' ? <Bot size={16} /> : userInitial}
+                    {msg.role === 'bot' ? <RobotAvatar size={22} id={`msg-${i}`} /> : userInitial}
                   </div>
                   <div className="copilot-msg-content">
                     <div className="copilot-msg-bubble">
@@ -341,7 +546,9 @@ export default function AICopilot() {
 
               {isLoading && (
                 <div className="copilot-msg copilot-msg--bot">
-                  <div className="copilot-msg-avatar"><Bot size={16} /></div>
+                  <div className="copilot-msg-avatar">
+                    <RobotAvatar size={22} id="msg-typing" />
+                  </div>
                   <div className="copilot-msg-content">
                     <div className="copilot-msg-bubble">
                       <div className="copilot-typing">

@@ -102,16 +102,16 @@ export default function UploadPage({ user }) {
               <p>All file types</p>
             </div>
             <div className="upload-info-card">
-              <h4>Max File Size</h4>
-              <p>500 MB per upload</p>
-            </div>
-            <div className="upload-info-card">
               <h4>Security Layers</h4>
               <p>4 automated checks</p>
             </div>
             <div className="upload-info-card">
               <h4>Encryption</h4>
               <p>AES-256 + Kyber PQ</p>
+            </div>
+            <div className="upload-info-card">
+              <h4>Threat Alerts</h4>
+              <p>Real-time SMTP alerts</p>
             </div>
           </div>
 

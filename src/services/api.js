@@ -11,9 +11,11 @@
 const API_BASE = 'http://localhost:5000/api';
 
 // Upload configuration
-const MAX_CONCURRENT_CHUNKS = 6;   // Max parallel chunk uploads (browser limit per domain)
+const UPLOAD_STRATEGY = 's3';    // 'local' for local staged scan (faster, no S3 quarantine download); 's3' for direct AWS S3 presigned multipart upload
+const MAX_CONCURRENT_CHUNKS = 15;   // Max parallel chunk uploads (browser limit per domain)
 const MAX_RETRY_ATTEMPTS = 3;      // Retry failed chunks up to 3 times
 const RETRY_DELAY_MS = 1000;       // Base retry delay (exponential backoff)
+
 
 class ApiService {
   constructor() {
@@ -62,10 +64,10 @@ class ApiService {
   }
 
   // ── Auth ──────────────────────────────
-  async signup(email, password) {
+  async signup(email, password, otpVerified = false) {
     const data = await this.request('/auth/signup', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, otp_verified: otpVerified }),
     });
     this.setToken(data.token);
     return data;
@@ -80,6 +82,31 @@ class ApiService {
     return data;
   }
 
+  async sendOtp(email, purpose) {
+    return this.request('/auth/send-otp', {
+      method: 'POST',
+      body: JSON.stringify({ email, purpose }),
+    });
+  }
+
+  async verifyOtp(email, otp, purpose) {
+    return this.request('/auth/verify-otp', {
+      method: 'POST',
+      body: JSON.stringify({ email, otp, purpose }),
+    });
+  }
+
+  async resetPassword(email, password) {
+    return this.request('/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    });
+  }
+
+  async getGoogleAuthUrl() {
+    return this.request('/auth/google', { method: 'GET' });
+  }
+
   async getMe() {
     return this.request('/auth/me');
   }
@@ -91,9 +118,9 @@ class ApiService {
 
   // ── AWS ───────────────────────────────
   async connectAws(credentials) {
-    return this.request('/aws/connect', { 
-        method: 'POST',
-        body: JSON.stringify(credentials)
+    return this.request('/aws/connect', {
+      method: 'POST',
+      body: JSON.stringify(credentials)
     });
   }
 
@@ -119,19 +146,108 @@ class ApiService {
    * @returns {Promise<Object>} - Upload result with file record
    */
   async uploadFile(file, onProgress) {
-    // Start computing the SHA-256 hash in parallel with the upload process
-    const hashPromise = (async () => {
+    // Start computing the SHA-256 hash in a background Web Worker so it doesn't block the upload process
+    const hashPromise = new Promise((resolve) => {
       try {
-        const arrayBuffer = await file.arrayBuffer();
-        const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
-        const hashArray = Array.from(new Uint8Array(hashBuffer));
-        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-        return hashHex;
-      } catch (e) {
-        console.error("Failed to compute SHA-256 in browser:", e);
-        return null;
+        const workerCode = `
+          self.onmessage = async (e) => {
+            try {
+              const file = e.data.file;
+              const arrayBuffer = await file.arrayBuffer();
+              const hashBuffer = await self.crypto.subtle.digest('SHA-256', arrayBuffer);
+              const hashArray = Array.from(new Uint8Array(hashBuffer));
+              const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+              self.postMessage({ success: true, hash: hashHex });
+            } catch (err) {
+              self.postMessage({ success: false, error: err.toString() });
+            }
+          };
+        `;
+        const blob = new Blob([workerCode], { type: 'application/javascript' });
+        const workerUrl = URL.createObjectURL(blob);
+        const worker = new Worker(workerUrl);
+
+        worker.onmessage = (e) => {
+          worker.terminate();
+          URL.revokeObjectURL(workerUrl);
+          if (e.data.success) {
+            resolve(e.data.hash);
+          } else {
+            console.error("Worker hashing failed:", e.data.error);
+            resolve(null);
+          }
+        };
+
+        worker.postMessage({ file });
+      } catch (err) {
+        console.error("Failed to start hash worker, using main thread fallback:", err);
+        // Fallback to main thread hashing
+        (async () => {
+          try {
+            const arrayBuffer = await file.arrayBuffer();
+            const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            resolve(hashHex);
+          } catch (e) {
+            console.error("Main thread hash fallback failed:", e);
+            resolve(null);
+          }
+        })();
       }
-    })();
+    });
+
+    if (UPLOAD_STRATEGY === 'local') {
+      const sha256 = await hashPromise;
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('fileSize', file.size);
+      if (sha256) {
+        formData.append('sha256', sha256);
+      }
+
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${API_BASE}/upload/local`);
+
+        const token = this.getToken();
+        if (token) {
+          xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        }
+
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable && onProgress) {
+            onProgress(Math.round((e.loaded / e.total) * 100));
+          }
+        });
+
+        xhr.addEventListener('load', () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const data = JSON.parse(xhr.responseText);
+              resolve(data);
+            } catch (err) {
+              reject(new Error('Invalid JSON response from server'));
+            }
+          } else {
+            try {
+              const data = JSON.parse(xhr.responseText);
+              reject(new Error(data.error || `Upload failed with status ${xhr.status}`));
+            } catch {
+              reject(new Error(`Upload failed with status ${xhr.status}`));
+            }
+          }
+        });
+
+        xhr.addEventListener('error', () => reject(new Error('Network error during local upload')));
+        xhr.addEventListener('timeout', () => reject(new Error('Local upload timed out')));
+
+        // 10 minutes timeout for local upload
+        xhr.timeout = 10 * 60 * 1000;
+        xhr.send(formData);
+      });
+    }
 
     // ── Step 1: Initiate multipart upload ──
     const initData = await this.request('/upload/initiate', {
@@ -309,15 +425,27 @@ class ApiService {
     return this.request(`/files/${fileId}`);
   }
 
-  async downloadFile(fileId) {
-    const url = `${API_BASE}/files/${fileId}/download`;
+  async downloadFile(fileId, recovery = false) {
+    const url = `${API_BASE}/files/${fileId}/download${recovery ? '?recovery=true' : ''}`;
     const token = this.getToken();
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!response.ok) throw new ApiError('Download failed', response.status);
+    if (!response.ok) {
+      try {
+        const data = await response.json();
+        if (data.status === 'integrity_failed') {
+          return { integrityFailed: true, reasons: data.reasons };
+        }
+        throw new ApiError(data.error || 'Download failed', response.status);
+      } catch (e) {
+        if (e instanceof ApiError) throw e;
+        throw new ApiError('Download failed', response.status);
+      }
+    }
+    const warning = response.headers.get('X-Decryption-Warning');
     const blob = await response.blob();
-    return blob;
+    return { blob, warning };
   }
 
   async deleteFile(fileId) {
@@ -349,10 +477,14 @@ class ApiService {
   }
 
   // ── AI Copilot ────────────────────────
-  async sendCopilotMessage(message) {
+  async sendCopilotMessage(message, fileId = null) {
+    const payload = { message };
+    if (fileId) {
+      payload.file_id = fileId;
+    }
     return this.request('/copilot/chat', {
       method: 'POST',
-      body: JSON.stringify({ message }),
+      body: JSON.stringify(payload),
     });
   }
 
@@ -438,7 +570,7 @@ class ApiService {
   }
 
   async downloadSharedFile(token, options = {}) {
-    const url = `${API_BASE}/share/${token}/download`;
+    const url = `${API_BASE}/share/${token}/download${options.recovery ? '?recovery=true' : ''}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -447,14 +579,24 @@ class ApiService {
       body: JSON.stringify({
         password: options.password || null,
         email: options.email || null,
+        recovery: options.recovery || false,
       })
     });
     if (!response.ok) {
-      const data = await response.json();
-      throw new ApiError(data.error || 'Failed to download shared file', response.status);
+      try {
+        const data = await response.json();
+        if (data.status === 'integrity_failed') {
+          return { integrityFailed: true, reasons: data.reasons };
+        }
+        throw new ApiError(data.error || 'Failed to download shared file', response.status);
+      } catch (e) {
+        if (e instanceof ApiError) throw e;
+        throw new ApiError('Failed to download shared file', response.status);
+      }
     }
+    const warning = response.headers.get('X-Decryption-Warning');
     const blob = await response.blob();
-    return blob;
+    return { blob, warning };
   }
 }
 

@@ -9,7 +9,7 @@ class User(db.Model):
     __tablename__ = 'users'
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
-    password_hash = db.Column(db.String(255), nullable=False)
+    password_hash = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     aws_connected = db.Column(db.Boolean, default=False)
     aws_account_id = db.Column(db.String(20), nullable=True)
@@ -19,6 +19,15 @@ class User(db.Model):
     kms_key_arn = db.Column(db.String(200), nullable=True)
     aws_access_key = db.Column(db.String(255), nullable=True)
     aws_secret_key = db.Column(db.String(255), nullable=True)
+
+    # Google OAuth columns
+    is_google_user = db.Column(db.Boolean, default=False)
+    google_id = db.Column(db.String(255), nullable=True)
+
+    # Last login metadata columns
+    last_login_at = db.Column(db.DateTime, nullable=True)
+    last_login_ip = db.Column(db.String(45), nullable=True)
+    last_login_device = db.Column(db.String(255), nullable=True)
 
     files = db.relationship('File', backref='owner', lazy='dynamic')
 
@@ -36,6 +45,11 @@ class User(db.Model):
             'quarantine_bucket': self.quarantine_bucket,
             'secure_bucket': self.secure_bucket,
             'kms_key_arn': self.kms_key_arn,
+            'is_google_user': self.is_google_user,
+            'google_id': self.google_id,
+            'last_login_at': self.last_login_at.isoformat() + 'Z' if self.last_login_at else None,
+            'last_login_ip': self.last_login_ip,
+            'last_login_device': self.last_login_device,
         }
 
 
@@ -47,7 +61,7 @@ class File(db.Model):
     size = db.Column(db.Float, nullable=False)  # in bytes
     size_display = db.Column(db.String(20), nullable=False)
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
-    status = db.Column(db.String(20), default='quarantine')  # quarantine, scanning, safe, blocked
+    status = db.Column(db.String(50), default='quarantine')  # quarantine, scanning, safe, blocked
     risk = db.Column(db.Integer, nullable=True)
     checks = db.Column(db.String(100), default='Awaiting scan')
     sha256_hash = db.Column(db.String(64), nullable=True)
@@ -183,6 +197,9 @@ class SharedFile(db.Model):
     
     file = db.relationship('File', backref='shared_links')
     
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
     def is_expired(self):
         return datetime.utcnow() > self.expires_at
 
@@ -233,6 +250,9 @@ class ShareAuditLog(db.Model):
     share_token = db.Column(db.String(64), nullable=True)
     detail = db.Column(db.String(255), nullable=True)
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -250,3 +270,46 @@ class ShareAuditLog(db.Model):
             'detail': self.detail,
             'details': self.detail
         }
+
+
+class AuditLog(db.Model):
+    __tablename__ = 'audit_logs'
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False, index=True)
+    file_id = db.Column(db.String(36), db.ForeignKey('files.id'), nullable=False, index=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    event_type = db.Column(db.String(50), nullable=False)  # INTEGRITY_FAILED, RECOVERY_DOWNLOAD_REQUESTED
+    failure_reason = db.Column(db.String(255), nullable=True)
+    recovery_requested = db.Column(db.Boolean, default=False)
+    ip_address = db.Column(db.String(45), nullable=True)
+    browser_info = db.Column(db.String(500), nullable=True)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'file_id': self.file_id,
+            'timestamp': self.timestamp.isoformat() + 'Z',
+            'event_type': self.event_type,
+            'failure_reason': self.failure_reason,
+            'recovery_requested': self.recovery_requested,
+            'ip_address': self.ip_address,
+            'browser_info': self.browser_info
+        }
+
+
+class OTP(db.Model):
+    __tablename__ = 'otps'
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), nullable=False)
+    otp_code = db.Column(db.String(6), nullable=False)
+    purpose = db.Column(db.String(20), nullable=False)  # 'login' or 'signup'
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used = db.Column(db.Boolean, default=False)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)

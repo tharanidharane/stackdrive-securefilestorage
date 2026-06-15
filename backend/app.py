@@ -23,9 +23,12 @@ import bcrypt
 import io
 
 import gc
-from config import Config
-from models import db, User, File, PipelineStage, Notification
-from pipeline import init_pipeline_stages, run_pipeline, compute_sha256, migrate_old_stage_names, warmup_clamav, dispatch_pipeline
+from config import Config, HOST_SCAN_DIR
+from models import db, User, File, PipelineStage, Notification, OTP, AuditLog
+from pipeline import init_pipeline_stages, run_pipeline, compute_sha256, migrate_old_stage_names, warmup_clamav, dispatch_pipeline, cleanup_stuck_scans
+from encryption import verify_pqc_available
+
+verify_pqc_available()
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -33,16 +36,17 @@ app.config.from_object(Config)
 # SMTP Config (Real Flask-Mail setup)
 app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER', 'smtp.gmail.com')
 app.config['MAIL_PORT'] = int(os.environ.get('MAIL_PORT', 587))
-app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USE_TLS'] = os.environ.get('MAIL_USE_TLS', 'true').lower() == 'true'
 app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME', 'stackdrive.alert@example.com')
 app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD', 'dummy-pass-123')
+app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_DEFAULT_SENDER', os.environ.get('MAIL_USERNAME', 'stackdrive.alert@example.com'))
 mail = Mail(app)
 
 # Init extensions
 CORS(app, origins=[
     'http://localhost:5173', 'http://127.0.0.1:5173',
     'http://localhost:5174', 'http://127.0.0.1:5174'
-], supports_credentials=True)
+], supports_credentials=True, expose_headers=['X-Decryption-Warning'])
 
 jwt = JWTManager(app)
 db.init_app(app)
@@ -52,8 +56,138 @@ with app.app_context():
     db.create_all()
     # Migrate old pipeline stage names to new naming convention
     migrate_old_stage_names()
+    # Recover scans that were interrupted
+    cleanup_stuck_scans()
     # Pre-warm ClamAV daemon container in background asynchronously
     warmup_clamav()
+
+
+# Google OAuth Config
+client_config = {
+    "web": {
+        "client_id": os.environ.get("GOOGLE_CLIENT_ID"),
+        "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET"),
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "redirect_uris": [os.environ.get("GOOGLE_REDIRECT_URI")]
+    }
+}
+
+
+# ════════════════════════════════════════
+# AUTH HELPER FUNCTIONS
+# ════════════════════════════════════════
+
+def send_login_notification(user_id, user_agent_str, remote_addr, login_method):
+    from user_agents import parse
+    try:
+        ua = parse(user_agent_str)
+        device_name = f"{ua.browser.family} {ua.browser.version_string} on {ua.os.family} {ua.os.version_string}"
+    except Exception:
+        device_name = "Unknown Device"
+
+    ip_address = remote_addr
+    login_time = datetime.utcnow().strftime('%B %d, %Y at %I:%M %p UTC')
+    
+    location = "Location lookup not available"
+    try:
+        import requests
+        resp = requests.get(f"http://ip-api.com/json/{ip_address}?fields=city,country", timeout=2)
+        if resp.status_code == 200:
+            data = resp.json()
+            city = data.get('city')
+            country = data.get('country')
+            if city and country:
+                location = f"{city}, {country}"
+    except Exception as e:
+        print(f"Location lookup error: {e}")
+
+    try:
+        with app.app_context():
+            user = User.query.get(user_id)
+            if not user:
+                return
+            
+            html_body = f"""
+            <div style="font-family: Arial, sans-serif; background-color: #0f172a; color: #f1f5f9; padding: 24px; border-radius: 8px; max-width: 500px; margin: 0 auto; border: 1px solid #334155;">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 20px;">
+                <span style="font-size: 20px;">🔐</span>
+                <h2 style="margin: 0; color: #38bdf8; font-size: 18px;">StackDrive Security Alert</h2>
+              </div>
+              <p style="margin-bottom: 20px; font-size: 15px; color: #cbd5e1;">A new sign-in was detected on your account</p>
+              <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px; font-size: 14px; color: #94a3b8;">
+                <tr>
+                  <td style="padding: 6px 0; width: 120px;">👤 <strong>Account:</strong></td>
+                  <td style="padding: 6px 0; color: #f1f5f9;">{user.email}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0;">🖥️ <strong>Device:</strong></td>
+                  <td style="padding: 6px 0; color: #f1f5f9;">{device_name}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0;">🌐 <strong>IP Address:</strong></td>
+                  <td style="padding: 6px 0; color: #f1f5f9;">{ip_address}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0;">📍 <strong>Location:</strong></td>
+                  <td style="padding: 6px 0; color: #f1f5f9;">{location}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0;">🕐 <strong>Time:</strong></td>
+                  <td style="padding: 6px 0; color: #f1f5f9;">{login_time}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0;">🔑 <strong>Method:</strong></td>
+                  <td style="padding: 6px 0; color: #f1f5f9;">{login_method}</td>
+                </tr>
+              </table>
+              
+              <div style="background-color: #1e293b; padding: 14px; border-radius: 6px; margin-bottom: 16px; border-left: 4px solid #10b981;">
+                <strong style="color: #10b981; display: block; margin-bottom: 4px;">This was you?</strong>
+                <span style="font-size: 13px; color: #cbd5e1;">No action needed. You're all set.</span>
+              </div>
+              
+              <div style="background-color: #1e293b; padding: 14px; border-radius: 6px; margin-bottom: 24px; border-left: 4px solid #ef4444;">
+                <strong style="color: #ef4444; display: block; margin-bottom: 4px;">⚠️ Wasn't you?</strong>
+                <span style="font-size: 13px; color: #cbd5e1; display: block; margin-bottom: 12px;">Secure your account immediately by resetting your password:</span>
+                <a href="http://localhost:5173/forgot" style="display: inline-block; background-color: #ef4444; color: white; padding: 8px 16px; border-radius: 4px; text-decoration: none; font-size: 13px; font-weight: bold;">Secure My Account</a>
+              </div>
+              
+              <hr style="border: 0; border-top: 1px solid #334155; margin-bottom: 16px;">
+              <p style="font-size: 11px; color: #64748b; margin: 0; text-align: center;">StackDrive Zero-Trust Security Platform<br>This is an automated security alert. Do not reply to this email.</p>
+            </div>
+            """
+            sender = app.config.get('MAIL_DEFAULT_SENDER') or app.config.get('MAIL_USERNAME')
+            msg = Message(
+                subject="New sign-in to your StackDrive account",
+                sender=sender,
+                recipients=[user.email],
+                html=html_body
+            )
+            mail.send(msg)
+    except Exception as e:
+        print(f"Error sending login notification email: {e}")
+
+
+def handle_successful_login(user, user_agent_str, remote_addr, login_method):
+    from user_agents import parse
+    try:
+        ua = parse(user_agent_str)
+        device_name = f"{ua.browser.family} {ua.browser.version_string} on {ua.os.family} {ua.os.version_string}"
+    except Exception:
+        device_name = "Unknown Device"
+
+    user.last_login_at = datetime.utcnow()
+    user.last_login_ip = remote_addr
+    user.last_login_device = device_name
+    db.session.commit()
+    
+    # Send email notification asynchronously using background thread
+    threading.Thread(
+        target=send_login_notification,
+        args=(user.id, user_agent_str, remote_addr, login_method),
+        daemon=True
+    ).start()
 
 
 # ════════════════════════════════════════
@@ -68,12 +202,22 @@ def signup():
     
     email = data.get('email', '').strip().lower()
     password = data.get('password', '')
+    otp_verified = data.get('otp_verified', False)
     
     if not email or '@' not in email:
         return jsonify({'error': 'Valid email required'}), 400
     if len(password) < 6:
         return jsonify({'error': 'Password must be at least 6 characters'}), 400
     
+    # Check OTP verification status
+    if not otp_verified:
+        five_minutes_ago = datetime.utcnow() - timedelta(minutes=15)
+        recent_otp = OTP.query.filter_by(email=email, purpose='signup', used=True)\
+            .filter(OTP.created_at >= five_minutes_ago)\
+            .first()
+        if not recent_otp:
+            return jsonify({'error': 'Email not verified — complete OTP verification first'}), 403
+
     if User.query.filter_by(email=email).first():
         return jsonify({'error': 'An account with this email already exists'}), 409
     
@@ -105,16 +249,250 @@ def login():
     if not user:
         return jsonify({'error': 'No account found with this email'}), 401
     
+    if not user.password_hash:
+        return jsonify({'error': 'Please sign in with Google'}), 401
+        
     if not bcrypt.checkpw(password.encode('utf-8'), user.password_hash.encode('utf-8')):
         return jsonify({'error': 'Incorrect password'}), 401
     
     token = create_access_token(identity=user.id, additional_claims={'email': user.email})
+    
+    # Trigger login notification & last login metadata update
+    handle_successful_login(user, request.headers.get('User-Agent', ''), request.remote_addr, 'Email + Password')
     
     return jsonify({
         'message': 'Login successful',
         'token': token,
         'user': user.to_dict(),
     }), 200
+
+
+@app.route('/api/auth/send-otp', methods=['POST'])
+def send_otp():
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Request body required'}), 400
+    
+    email = data.get('email', '').strip().lower()
+    purpose = data.get('purpose', '')
+    
+    if not email or '@' not in email:
+        return jsonify({'error': 'Valid email required'}), 400
+    if purpose not in ['login', 'signup', 'reset']:
+        return jsonify({'error': 'Invalid purpose'}), 400
+        
+    user = User.query.filter_by(email=email).first()
+    if purpose == 'signup':
+        if user:
+            return jsonify({'error': 'An account with this email already exists'}), 409
+    elif purpose in ['login', 'reset']:
+        if not user:
+            return jsonify({'error': 'No account found with this email'}), 404
+            
+    # Generate 6-digit random OTP
+    import random
+    otp_code = f"{random.randint(100000, 999999)}"
+    
+    # Delete any previous unused OTPs for this email+purpose
+    OTP.query.filter_by(email=email, purpose=purpose, used=False).delete()
+    
+    # Save new OTP to DB with expires_at = now + 10 minutes
+    expires_at = datetime.utcnow() + timedelta(minutes=10)
+    otp_record = OTP(
+        email=email,
+        otp_code=otp_code,
+        purpose=purpose,
+        expires_at=expires_at,
+        used=False
+    )
+    db.session.add(otp_record)
+    db.session.commit()
+    
+    # Send email via Flask-Mail
+    try:
+        sender = app.config.get('MAIL_DEFAULT_SENDER') or app.config.get('MAIL_USERNAME')
+        msg = Message(
+            subject="StackDrive — Your Verification Code",
+            sender=sender,
+            recipients=[email],
+            body=f"Your StackDrive verification code is: {otp_code}\n\nThis code expires in 10 minutes. Do not share it with anyone."
+        )
+        mail.send(msg)
+    except Exception as e:
+        print(f"Failed to send OTP email: {e}")
+        return jsonify({'error': f"Failed to send OTP email: {str(e)}"}), 500
+        
+    return jsonify({'message': 'OTP sent to your email'}), 200
+
+
+@app.route('/api/auth/verify-otp', methods=['POST'])
+def verify_otp():
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Request body required'}), 400
+        
+    email = data.get('email', '').strip().lower()
+    otp_code = data.get('otp', '').strip()
+    purpose = data.get('purpose', '')
+    
+    if not email or not otp_code or purpose not in ['login', 'signup', 'reset']:
+        return jsonify({'error': 'Missing required fields'}), 400
+        
+    # Find the latest unused, unexpired OTP for this email+purpose
+    now = datetime.utcnow()
+    otp_record = OTP.query.filter_by(email=email, purpose=purpose, used=False)\
+        .filter(OTP.expires_at > now)\
+        .order_by(OTP.created_at.desc()).first()
+        
+    if not otp_record or otp_record.otp_code != otp_code:
+        return jsonify({'error': 'Invalid or expired OTP'}), 400
+        
+    # Mark OTP as used
+    otp_record.used = True
+    db.session.commit()
+    
+    if purpose == 'login':
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        token = create_access_token(identity=user.id, additional_claims={'email': user.email})
+        
+        # Trigger login notification & last login metadata update
+        handle_successful_login(user, request.headers.get('User-Agent', ''), request.remote_addr, 'Email + OTP')
+        
+        return jsonify({
+            'user': user.to_dict(),
+            'token': token
+        }), 200
+    else:  # signup or reset
+        return jsonify({
+            'verified': True,
+            'email': email
+        }), 200
+
+
+@app.route('/api/auth/reset-password', methods=['POST'])
+def reset_password():
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Request body required'}), 400
+        
+    email = data.get('email', '').strip().lower()
+    password = data.get('password', '')
+    
+    if not email or '@' not in email:
+        return jsonify({'error': 'Valid email required'}), 400
+    if len(password) < 6:
+        return jsonify({'error': 'Password must be at least 6 characters'}), 400
+        
+    # Check OTP verification status
+    five_minutes_ago = datetime.utcnow() - timedelta(minutes=15)
+    recent_otp = OTP.query.filter_by(email=email, purpose='reset', used=True)\
+        .filter(OTP.created_at >= five_minutes_ago)\
+        .first()
+    if not recent_otp:
+        return jsonify({'error': 'Email not verified — complete OTP verification first'}), 403
+        
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({'error': 'No account found with this email'}), 404
+        
+    password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    user.password_hash = password_hash
+    db.session.commit()
+    
+    return jsonify({'message': 'Password reset successfully'}), 200
+
+
+@app.route('/api/auth/google', methods=['GET'])
+def google_auth():
+    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+    from google_auth_oauthlib.flow import Flow
+    
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=[
+            "openid",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/userinfo.profile"
+        ],
+        redirect_uri=os.environ.get("GOOGLE_REDIRECT_URI")
+    )
+    auth_url, state = flow.authorization_url(
+        access_type='offline',
+        include_granted_scopes='true'
+    )
+    return jsonify({"auth_url": auth_url}), 200
+
+
+@app.route('/api/auth/google/callback', methods=['GET'])
+def google_callback():
+    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+    from flask import redirect
+    import urllib.parse
+    import json
+    from google_auth_oauthlib.flow import Flow
+    from google.oauth2 import id_token
+    from google.auth.transport import requests as google_requests
+    
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=[
+            "openid",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/userinfo.profile"
+        ],
+        redirect_uri=os.environ.get("GOOGLE_REDIRECT_URI")
+    )
+    
+    code = request.args.get('code')
+    if not code:
+        return jsonify({"error": "Authorization code missing"}), 400
+        
+    try:
+        flow.fetch_token(code=code)
+        credentials = flow.credentials
+        
+        id_info = id_token.verify_oauth2_token(
+            credentials.id_token,
+            google_requests.Request(),
+            os.environ.get("GOOGLE_CLIENT_ID"),
+            clock_skew_in_seconds=10
+        )
+        
+        email = id_info.get('email').strip().lower()
+        google_id = id_info.get('sub')
+        
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            user = User(
+                email=email,
+                google_id=google_id,
+                is_google_user=True,
+                password_hash=None
+            )
+            db.session.add(user)
+            db.session.commit()
+        else:
+            if not user.google_id:
+                user.google_id = google_id
+                user.is_google_user = True
+                db.session.commit()
+                
+        token = create_access_token(identity=user.id, additional_claims={'email': user.email})
+        
+        # Trigger login notification & last login metadata update
+        handle_successful_login(user, request.headers.get('User-Agent', ''), request.remote_addr, 'Google OAuth')
+        
+        user_json = urllib.parse.quote(json.dumps(user.to_dict()))
+        redirect_url = f"http://localhost:5173/auth/google/callback?token={token}&user={user_json}"
+        return redirect(redirect_url)
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Authentication failed: {str(e)}"}), 500
 
 
 @app.route('/api/auth/me', methods=['GET'])
@@ -124,6 +502,34 @@ def get_me():
     if not user:
         return jsonify({'error': 'User not found'}), 404
     return jsonify({'user': user.to_dict()}), 200
+
+
+def _get_aws_session(user):
+    import logging
+    import boto3
+
+    # Prefer IAM role assumption (production path)
+    if hasattr(user, 'iam_role_arn') and user.iam_role_arn:
+        sts = boto3.client('sts')
+        assumed = sts.assume_role(
+            RoleArn=user.iam_role_arn,
+            RoleSessionName=f"stackdrive-user-{user.id}",
+            DurationSeconds=900,
+        )
+        creds = assumed['Credentials']
+        return boto3.Session(
+            aws_access_key_id=creds['AccessKeyId'],
+            aws_secret_access_key=creds['SecretAccessKey'],
+            aws_session_token=creds['SessionToken'],
+            region_name=getattr(user, 'aws_region', None) or 'us-east-1',
+        )
+
+    logging.warning("AWS credentials read from DB — migrate to IAM roles or environment variables")
+    return boto3.Session(
+        aws_access_key_id=user.aws_access_key,
+        aws_secret_access_key=user.aws_secret_key,
+        region_name=getattr(user, 'aws_region', None) or 'us-east-1'
+    )
 
 
 # ════════════════════════════════════════
@@ -284,15 +690,12 @@ def disconnect_aws():
 
 def calculate_chunk_size(file_size):
     # Minimum chunk size for S3 is 5MB.
-    # We dynamically increase it up to 64MB for larger files to minimize HTTP round-trips.
-    if file_size <= 50 * 1024 * 1024:
+    # We keep the chunk size smaller (around 8MB - 12MB) to allow maximum upload parallelism
+    # while staying above S3's 5MB minimum part size.
+    if file_size <= 100 * 1024 * 1024:
         return 8 * 1024 * 1024       # 8 MB chunks
-    elif file_size <= 100 * 1024 * 1024:
-        return 16 * 1024 * 1024     # 16 MB chunks
-    elif file_size <= 250 * 1024 * 1024:
-        return 32 * 1024 * 1024     # 32 MB chunks
     else:
-        return 64 * 1024 * 1024     # 64 MB chunks
+        return 12 * 1024 * 1024      # 12 MB chunks (allows parallel throughput up to 15 concurrent chunks)
 
 
 @app.route('/api/upload/initiate', methods=['POST'])
@@ -328,11 +731,7 @@ def initiate_upload():
     s3_key = safe_name
 
     try:
-        session = boto3.Session(
-            aws_access_key_id=user.aws_access_key,
-            aws_secret_access_key=user.aws_secret_key,
-            region_name=user.aws_region
-        )
+        session = _get_aws_session(user)
         s3 = session.client('s3')
 
         # Initiate multipart upload
@@ -430,11 +829,7 @@ def complete_upload():
         db.session.commit()
 
     try:
-        session = boto3.Session(
-            aws_access_key_id=user.aws_access_key,
-            aws_secret_access_key=user.aws_secret_key,
-            region_name=user.aws_region
-        )
+        session = _get_aws_session(user)
         s3 = session.client('s3')
 
         # Complete the multipart upload on S3
@@ -467,6 +862,87 @@ def complete_upload():
         return jsonify({'error': f"Unexpected error: {str(e)}"}), 500
 
 
+@app.route('/api/upload/local', methods=['POST'])
+@jwt_required()
+def upload_local():
+    """
+    Direct local upload for high-performance scanning.
+    Bypasses S3 quarantine entirely.
+    """
+    import tempfile
+    user = User.query.get(get_jwt_identity())
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+        
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+        
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+        
+    sha256 = request.form.get('sha256')
+    try:
+        file_size = int(request.form.get('fileSize', 0))
+    except (ValueError, TypeError):
+        file_size = 0
+        
+    file_id = str(uuid.uuid4())
+    safe_name = secure_filename(file.filename)
+    s3_key = safe_name
+    
+    # Check max content length (500MB)
+    max_size = int(app.config.get('MAX_CONTENT_LENGTH', 500 * 1024 * 1024))
+    if file_size > max_size:
+        return jsonify({'error': 'File exceeds 500MB limit'}), 413
+        
+    # Format size display
+    if file_size < 1024:
+        size_display = f"{file_size} B"
+    elif file_size < 1024 * 1024:
+        size_display = f"{file_size / 1024:.1f} KB"
+    elif file_size < 1024 * 1024 * 1024:
+        size_display = f"{file_size / (1024 * 1024):.1f} MB"
+    else:
+        size_display = f"{file_size / (1024 * 1024 * 1024):.1f} GB"
+        
+    try:
+        # Save file locally in a temp dir with permissions readable by ClamAV / Sandbox
+        temp_dir = tempfile.mkdtemp(dir=HOST_SCAN_DIR)
+        os.chmod(temp_dir, 0o755)
+        temp_filepath = os.path.join(temp_dir, safe_name)
+        file.save(temp_filepath)
+        os.chmod(temp_filepath, 0o644)
+        
+        # Create file record
+        file_record = File(
+            id=file_id,
+            user_id=user.id,
+            name=file.filename,
+            size=file_size,
+            size_display=size_display,
+            status='quarantine',
+            sha256_hash=sha256
+        )
+        db.session.add(file_record)
+        db.session.commit()
+        
+        # Initialize pipeline stages
+        init_pipeline_stages(file_id)
+        
+        # Run pipeline in background using the local temp file path
+        dispatch_pipeline(file_id, s3_key, user.id, temp_filepath=temp_filepath, temp_dir=temp_dir)
+        
+        return jsonify({
+            'message': 'File uploaded locally — pipeline starting',
+            'file': file_record.to_dict(),
+        }), 201
+        
+    except Exception as e:
+        return jsonify({'error': f"Local upload failed: {str(e)}"}), 500
+
+
+
 @app.route('/api/upload/abort', methods=['POST'])
 @jwt_required()
 def abort_upload():
@@ -486,11 +962,7 @@ def abort_upload():
     s3_key = data.get('s3Key')
 
     try:
-        session = boto3.Session(
-            aws_access_key_id=user.aws_access_key,
-            aws_secret_access_key=user.aws_secret_key,
-            region_name=user.aws_region
-        )
+        session = _get_aws_session(user)
         s3 = session.client('s3')
 
         # Abort the multipart upload
@@ -549,10 +1021,12 @@ def upload_file():
     import tempfile
     
     # Save the file locally first instead of blocking user request for S3 upload
-    temp_dir = tempfile.mkdtemp()
+    temp_dir = tempfile.mkdtemp(dir=HOST_SCAN_DIR)
+    os.chmod(temp_dir, 0o755)
     temp_filepath = os.path.join(temp_dir, safe_name)
     try:
         file.save(temp_filepath)
+        os.chmod(temp_filepath, 0o644)
     except Exception as e:
         return jsonify({'error': f"Failed to save file: {str(e)}"}), 500
     
@@ -627,8 +1101,15 @@ def download_file(file_id):
     file = File.query.filter_by(id=file_id, user_id=user.id).first()
     if not file:
         return jsonify({'error': 'File not found'}), 404
-    if file.status != 'safe':
-        return jsonify({'error': 'Only verified safe files can be downloaded'}), 403
+
+    is_recovery = request.args.get('recovery') == 'true'
+    if is_recovery:
+        if file.status not in ['safe', 'Integrity Verification Failed']:
+            return jsonify({'error': 'Only safe or integrity failed files can be downloaded in recovery mode'}), 403
+    else:
+        if file.status != 'safe':
+            return jsonify({'error': 'Only verified safe files can be downloaded'}), 403
+
     if not file.storage_path or not file.storage_path.startswith('s3://'):
         return jsonify({'error': 'File not available in AWS S3'}), 404
         
@@ -637,16 +1118,103 @@ def download_file(file_id):
 
         # strictly enforce v2 hybrid decryption
         engine, _ = create_encryption_engine(user)
-        decrypted_data, error = engine.decrypt_file(file)
-        if error:
-            return jsonify({'error': error}), 500
+        decrypted_data, warnings = engine.decrypt_file(file)
 
-        return send_file(
-            io.BytesIO(decrypted_data),
+        # Check for integrity failure
+        integrity_warnings = []
+        if warnings:
+            integrity_warnings = [
+                w for w in warnings 
+                if any(kw in w.lower() for kw in ["modified", "failed", "corrupted", "invalid", "tampered", "mismatch"])
+            ]
+
+        has_failed = (decrypted_data is None) or (len(integrity_warnings) > 0)
+        
+        if has_failed:
+            reasons = integrity_warnings if integrity_warnings else (warnings if warnings else ["Decryption/Integrity failure"])
+            
+            if not is_recovery:
+                # Mark file status
+                file.status = "Integrity Verification Failed"
+                
+                # Log security incident
+                audit_log = AuditLog(
+                    user_id=user.id,
+                    file_id=file.id,
+                    event_type='INTEGRITY_FAILED',
+                    failure_reason="; ".join(reasons),
+                    recovery_requested=False,
+                    ip_address=request.remote_addr,
+                    browser_info=request.user_agent.string
+                )
+                db.session.add(audit_log)
+                
+                # Add notification
+                notif = Notification(
+                    user_id=user.id,
+                    file_name=file.name,
+                    layer="Decryption Engine",
+                    threat_type="Integrity Verification Failed",
+                    action="Blocked download attempt due to tampering"
+                )
+                db.session.add(notif)
+                db.session.commit()
+                
+                return jsonify({
+                    "status": "integrity_failed",
+                    "message": "The file failed cryptographic verification.",
+                    "recovery_available": True,
+                    "reasons": reasons
+                }), 400
+            else:
+                if decrypted_data is None:
+                    return jsonify({'error': 'Recovery failed: the file is completely unrecoverable.'}), 500
+
+        download_name = file.name
+        headers = {}
+        if is_recovery:
+            name_parts = file.name.rsplit('.', 1)
+            if len(name_parts) == 2:
+                download_name = f"{name_parts[0]}_corrupted.{name_parts[1]}"
+            else:
+                download_name = f"{file.name}_corrupted"
+            
+            # Log recovery download requested
+            audit_log = AuditLog(
+                user_id=user.id,
+                file_id=file.id,
+                event_type='RECOVERY_DOWNLOAD_REQUESTED',
+                failure_reason="; ".join(integrity_warnings) if integrity_warnings else "User requested recovery download",
+                recovery_requested=True,
+                ip_address=request.remote_addr,
+                browser_info=request.user_agent.string
+            )
+            db.session.add(audit_log)
+            db.session.commit()
+            
+            # Set recovery headers
+            headers["X-Integrity-Status"] = "FAILED"
+            headers["X-Recovery-Download"] = "TRUE"
+            headers["X-Recovery-Reason"] = "; ".join(integrity_warnings) if integrity_warnings else "Verification failed"
+
+        response = send_file(
+            io.BytesIO(decrypted_data if decrypted_data is not None else b''),
             as_attachment=True,
-            download_name=file.name,
+            download_name=download_name,
             mimetype='application/octet-stream'
         )
+        
+        for k, v in headers.items():
+            response.headers[k] = v
+
+        if warnings:
+            response.headers['X-Decryption-Warning'] = "; ".join(warnings)
+            
+        if decrypted_data is not None:
+            del decrypted_data
+        gc.collect()
+        
+        return response
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -664,11 +1232,7 @@ def delete_file(file_id):
     user = User.query.get(user_id)
     if file.storage_path and file.storage_path.startswith('s3://'):
         try:
-            session = boto3.Session(
-                aws_access_key_id=user.aws_access_key,
-                aws_secret_access_key=user.aws_secret_key,
-                region_name=user.aws_region
-            )
+            session = _get_aws_session(user)
             s3 = session.client('s3')
             
             # Clean S3 path handling (no ?aes= param)
@@ -691,8 +1255,11 @@ def delete_file(file_id):
             print(f"Failed to delete from S3: {e}")
             pass
     
-    # Delete pipeline stages
+    # Delete related database entries to satisfy foreign key constraints
     PipelineStage.query.filter_by(file_id=file_id).delete()
+    SharedFile.query.filter_by(file_id=file_id).delete()
+    AuditLog.query.filter_by(file_id=file_id).delete()
+    
     db.session.delete(file)
     db.session.commit()
     
@@ -798,10 +1365,37 @@ def security_stats():
     safe_files = File.query.filter_by(user_id=user_id, status='safe').count()
     blocked_files = File.query.filter_by(user_id=user_id, status='blocked').count()
     
-    pass_rate = (safe_files / total_files * 100) if total_files > 0 else 0
+    completed_files_count = safe_files + blocked_files
+    pass_rate = (safe_files / completed_files_count * 100) if completed_files_count > 0 else 0
+    
+    # Calculate average scan time dynamically across all completed files for this user
+    completed_files = File.query.filter_by(user_id=user_id).filter(File.status.in_(['safe', 'blocked'])).all()
+    total_duration = 0.0
+    count_duration = 0
+    for f in completed_files:
+        stages = PipelineStage.query.filter_by(file_id=f.id).all()
+        started_times = [s.started_at for s in stages if s.started_at]
+        completed_times = [s.completed_at for s in stages if s.completed_at]
+        if started_times and completed_times:
+            file_start = min(started_times)
+            file_end = max(completed_times)
+            duration = (file_end - file_start).total_seconds()
+            if duration > 0:
+                total_duration += duration
+                count_duration += 1
+                
+    avg_seconds = (total_duration / count_duration) if count_duration > 0 else 0
+    if avg_seconds > 60:
+        mins = int(avg_seconds // 60)
+        secs = int(avg_seconds % 60)
+        avg_scan_time_display = f"{mins}m {secs}s"
+    elif avg_seconds > 0:
+        avg_scan_time_display = f"{int(round(avg_seconds))}s"
+    else:
+        avg_scan_time_display = "—"
     
     # Layer stats
-    layer_names = ['SHA-256 + VirusTotal', 'ZIP Heuristic Analysis', 'ClamAV (Docker)', 'Sandbox (Docker)']
+    layer_names = ['SHA-256 + VirusTotal', 'File Heuristic Analysis', 'ClamAV (Docker)', 'Sandbox (Docker)']
     layer_stats = []
     for name in layer_names:
         passed = PipelineStage.query.join(File).filter(
@@ -823,7 +1417,7 @@ def security_stats():
     return jsonify({
         'totalScanned': total_files,
         'passRate': round(pass_rate, 1),
-        'avgScanTime': '2m 14s',
+        'avgScanTime': avg_scan_time_display,
         'activeThreats': blocked_files,
         'layerStats': layer_stats,
         'recentThreats': [t.to_dict() for t in threats],
@@ -844,6 +1438,7 @@ def copilot_chat():
 
     user_id = get_jwt_identity()
     user_message = data['message'].strip()
+    file_id = data.get('file_id')
 
     from copilot import handle_copilot_message, call_gemini
 
@@ -862,12 +1457,12 @@ def copilot_chat():
     # Try Gemini first
     reply = None
     if os.environ.get('GEMINI_API_KEY'):
-        reply = call_gemini(user_id, user_message, system_prompt)
+        reply = call_gemini(user_id, user_message, system_prompt, file_id)
 
     # Fallback to local intelligent engine
     if not reply:
         try:
-            reply = handle_copilot_message(user_id, user_message)
+            reply = handle_copilot_message(user_id, user_message, file_id)
         except Exception as e:
             print(f"[COPILOT] Error: {e}")
             return jsonify({'reply': "I encountered an internal error. Please try again."}), 500
@@ -1062,19 +1657,70 @@ def process_shared_download(token, password=None, email=None):
     file_obj = link.file
     user_obj = User.query.get(file_obj.user_id)
     
+    is_recovery = (request.args.get('recovery') == 'true') or (request.is_json and request.json and request.json.get('recovery') == True)
+    
     from encryption import create_encryption_engine
     try:
         engine, _ = create_encryption_engine(user_obj)
-        decrypted_data, error = engine.decrypt_file(file_obj)
-        if error:
-            return jsonify({'error': error}), 500
+        decrypted_data, warnings = engine.decrypt_file(file_obj)
+        
+        # Check for integrity failure
+        integrity_warnings = []
+        if warnings:
+            integrity_warnings = [
+                w for w in warnings 
+                if any(kw in w.lower() for kw in ["modified", "failed", "corrupted", "invalid", "tampered", "mismatch"])
+            ]
+
+        has_failed = (decrypted_data is None) or (len(integrity_warnings) > 0)
+        
+        if has_failed:
+            reasons = integrity_warnings if integrity_warnings else (warnings if warnings else ["Decryption/Integrity failure"])
+            
+            if not is_recovery:
+                # Mark file status
+                file_obj.status = "Integrity Verification Failed"
+                
+                # Log security incident
+                audit_log = AuditLog(
+                    user_id=user_obj.id,
+                    file_id=file_obj.id,
+                    event_type='INTEGRITY_FAILED',
+                    failure_reason="; ".join(reasons),
+                    recovery_requested=False,
+                    ip_address=request.remote_addr,
+                    browser_info=request.user_agent.string
+                )
+                db.session.add(audit_log)
+                
+                # Create a security alert notification for owner
+                notif = Notification(
+                    user_id=link.owner_id,
+                    file_name=file_obj.name,
+                    layer="Share Service",
+                    threat_type="Integrity Verification Failed",
+                    action="Blocked shared download attempt due to tampering"
+                )
+                db.session.add(notif)
+                db.session.commit()
+                
+                return jsonify({
+                    "status": "integrity_failed",
+                    "message": "The file failed cryptographic verification.",
+                    "recovery_available": True,
+                    "reasons": reasons
+                }), 400
+            else:
+                if decrypted_data is None:
+                    return jsonify({'error': 'Recovery failed: the file is completely unrecoverable.'}), 500
+
     except Exception as e:
         print(f'[DECRYPTION ERROR] {e}')
-        return jsonify({'error': 'Failed to decrypt shared file'}), 500
+        return jsonify({'error': f'Failed to decrypt shared file: {str(e)}'}), 500
 
     # Apply watermarking if applicable
     email_clean = (email or '').strip()
-    if email_clean:
+    if email_clean and decrypted_data is not None:
         if file_obj.name.lower().endswith('.pdf'):
             decrypted_data = watermark_pdf(decrypted_data, email_clean)
         elif file_obj.name.lower().endswith('.txt'):
@@ -1091,7 +1737,7 @@ def process_shared_download(token, password=None, email=None):
         file_id=link.file_id,
         share_token_id=link.id,
         share_token=token,
-        detail=f"File downloaded successfully by {email_clean or 'Anonymous'} (IP: {request.remote_addr})"
+        detail=f"File downloaded successfully by {email_clean or 'Anonymous'} (IP: {request.remote_addr}){' [RECOVERY]' if is_recovery else ''}"
     )
     db.session.add(log)
     
@@ -1101,12 +1747,39 @@ def process_shared_download(token, password=None, email=None):
             user_id=link.owner_id,
             file_name=file_obj.name,
             layer="Share Service",
-            threat_type="File Downloaded",
+            threat_type="File Downloaded" if not is_recovery else "Recovery File Downloaded",
             action=f"Downloaded by {email_clean or 'Anonymous recipient'} (IP: {request.remote_addr})"
         )
         db.session.add(notif)
     except Exception as e:
         print(f"Notification creation failed: {e}")
+
+    # If it is recovery, rename file and set headers
+    download_name = file_obj.name
+    headers = {}
+    if is_recovery:
+        name_parts = file_obj.name.rsplit('.', 1)
+        if len(name_parts) == 2:
+            download_name = f"{name_parts[0]}_corrupted.{name_parts[1]}"
+        else:
+            download_name = f"{file_obj.name}_corrupted"
+        
+        # Log recovery download requested in AuditLog
+        audit_log = AuditLog(
+            user_id=user_obj.id,
+            file_id=file_obj.id,
+            event_type='RECOVERY_DOWNLOAD_REQUESTED',
+            failure_reason="; ".join(integrity_warnings) if integrity_warnings else "User requested recovery download via share link",
+            recovery_requested=True,
+            ip_address=request.remote_addr,
+            browser_info=request.user_agent.string
+        )
+        db.session.add(audit_log)
+        
+        # Set recovery headers
+        headers["X-Integrity-Status"] = "FAILED"
+        headers["X-Recovery-Download"] = "TRUE"
+        headers["X-Recovery-Reason"] = "; ".join(integrity_warnings) if integrity_warnings else "Verification failed"
 
     db.session.commit()
 
@@ -1125,14 +1798,21 @@ def process_shared_download(token, password=None, email=None):
 
     # Stream the decrypted file
     response = send_file(
-        io.BytesIO(decrypted_data),
+        io.BytesIO(decrypted_data if decrypted_data is not None else b''),
         as_attachment=True,
-        download_name=file_obj.name,
+        download_name=download_name,
         mimetype='application/octet-stream'
     )
     
+    for k, v in headers.items():
+        response.headers[k] = v
+
+    if warnings:
+        response.headers['X-Decryption-Warning'] = "; ".join(warnings)
+    
     # Explicitly clear memory buffers
-    del decrypted_data
+    if decrypted_data is not None:
+        del decrypted_data
     gc.collect()
     
     return response
@@ -1371,7 +2051,11 @@ def get_share_audit(share_id):
         return jsonify({'error': 'Share link not found'}), 404
         
     logs = ShareAuditLog.query.filter_by(share_token_id=share_id).order_by(ShareAuditLog.timestamp.desc()).all()
-    return jsonify({'logs': [l.to_dict() for l in logs]}), 200
+    log_dicts = [l.to_dict() for l in logs]
+    return jsonify({
+        'logs': log_dicts,
+        'audit': log_dicts
+    }), 200
 
 
 # ════════════════════════════════════════

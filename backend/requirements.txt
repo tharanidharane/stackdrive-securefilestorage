@@ -16,6 +16,13 @@ redis==7.4.0
 celery==5.6.3
 pypdf==4.2.0
 reportlab==4.2.0
+google-auth==2.30.0
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0
+ua-parser==0.18.0
+user-agents==2.2.0
+
+yara-python==4.5.4
 
 # ── Post-Quantum Cryptography (PQC) ──
 # liboqs-python must be installed from source (NOT available on PyPI)

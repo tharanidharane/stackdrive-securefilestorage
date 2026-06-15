@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Eye, EyeOff, LogIn, Shield, Lock, Cpu } from 'lucide-react';
+import { Eye, EyeOff, LogIn, Shield, Lock, Cpu, ArrowLeft } from 'lucide-react';
 import LogoIcon from '../components/LogoIcon';
 import { useToast } from '../components/Toast';
 import api from '../services/api';
 import EncryptionScene from '../components/EncryptionScene';
+import GoogleIcon from '../components/GoogleIcon';
 import './AuthPages.css';
 
 export default function LoginPage({ onLogin }) {
@@ -16,11 +17,26 @@ export default function LoginPage({ onLogin }) {
   
   // Cinematic Unlock State
   const [isUnlocking, setIsUnlocking] = useState(false);
+  const [lastLoginInfo, setLastLoginInfo] = useState('');
+
+  // OTP State
+  const [step, setStep] = useState('form'); // 'form' | 'otp'
+  const [otp, setOtp] = useState('');
+  const [otpLoading, setOtpLoading] = useState(false);
+  const [resendTimer, setResendTimer] = useState(0);
   
   const navigate = useNavigate();
   const { addToast } = useToast();
 
-  const validate = () => {
+  // Handle resend countdown
+  useEffect(() => {
+    if (resendTimer > 0) {
+      const timer = setTimeout(() => setResendTimer(resendTimer - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [resendTimer]);
+
+  const validateForm = () => {
     const errs = {};
     if (!email) errs.email = 'Email is required';
     else if (!/\S+@\S+\.\S+/.test(email)) errs.email = 'Enter a valid email';
@@ -30,33 +46,84 @@ export default function LoginPage({ onLogin }) {
     return Object.keys(errs).length === 0;
   };
 
-  const handleSubmit = async (e) => {
+  const handleSendOtp = async (e) => {
     e.preventDefault();
-    if (!validate()) return;
+    if (!validateForm()) return;
     setLoading(true);
     try {
-      const data = await api.login(email, password);
+      await api.sendOtp(email, 'login');
+      setStep('otp');
+      setResendTimer(30);
+      addToast('Verification code sent to your email', 'success');
+    } catch (err) {
+      if (err.status === 404) {
+        setErrors({ email: 'No account found with this email' });
+      } else {
+        addToast(err.message || 'Failed to send verification code', 'error');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyAndLogin = async (e) => {
+    e.preventDefault();
+    if (!otp || otp.length !== 6) {
+      setErrors({ otp: 'Please enter 6-digit code' });
+      return;
+    }
+    setOtpLoading(true);
+    try {
+      // Step 2: verify OTP
+      await api.verifyOtp(email, otp, 'login');
       
-      // Play cinematic unlock instead of instant navigation
+      // Step 3: Validate password and perform actual login
+      const loginData = await api.login(email, password);
+      
+      // Format last login info if available
+      if (loginData.user && loginData.user.last_login_at) {
+        const dateStr = new Date(loginData.user.last_login_at).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+        setLastLoginInfo(`Last signed in from ${loginData.user.last_login_device || 'Unknown'} at ${dateStr} from ${loginData.user.last_login_ip || 'Unknown'}`);
+      } else {
+        setLastLoginInfo('First login to StackDrive');
+      }
+
+      // Play cinematic unlock
       setIsUnlocking(true);
       
-      // Delay global login registration and navigation to let the 2.5s 3D animation breath
       setTimeout(() => {
-        onLogin(data.user);
+        onLogin(loginData.user);
         navigate('/overview');
       }, 2500);
 
     } catch (err) {
-      if (err.status === 401) {
-        if (err.message.includes('No account')) {
-          setErrors({ email: err.message });
-        } else {
-          setErrors({ password: err.message });
-        }
+      if (err.status === 400) {
+        setErrors({ otp: 'Invalid or expired OTP' });
+      } else if (err.status === 401) {
+        setErrors({ otp: err.message || 'Authentication failed' });
       } else {
-        addToast(err.message || 'Login failed', 'error');
+        addToast(err.message || 'Verification failed', 'error');
       }
-      setLoading(false); // Only stop loading if failed, otherwise let animation play
+      setOtpLoading(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    try {
+      setResendTimer(30);
+      await api.sendOtp(email, 'login');
+      addToast('Verification code resent!', 'success');
+    } catch (err) {
+      addToast(err.message || 'Failed to resend code', 'error');
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    try {
+      const { auth_url } = await api.getGoogleAuthUrl();
+      window.location.href = auth_url;
+    } catch (err) {
+      addToast(err.message || 'Failed to initialize Google login', 'error');
     }
   };
 
@@ -106,60 +173,131 @@ export default function LoginPage({ onLogin }) {
             <span className="logo-text">StackDrive</span>
           </div>
 
-          <h2 className="auth-title">Welcome Back</h2>
-          <p className="auth-subtitle">Sign in to your secure file gateway</p>
+          {isUnlocking ? (
+            <div style={{ textAlign: 'center', padding: '2rem 0' }}>
+              <h2 className="auth-title">Unlocking Gateway...</h2>
+              <div className="spinner" style={{ width: 30, height: 30, margin: '2rem auto', borderTopColor: 'var(--accent)' }}/>
+              {lastLoginInfo && (
+                <p style={{ fontSize: '12px', color: 'var(--text-muted)', maxWidth: '280px', margin: '0 auto', lineHeight: '1.5' }}>
+                  {lastLoginInfo}
+                </p>
+              )}
+            </div>
+          ) : step === 'form' ? (
+            <>
+              <h2 className="auth-title">Welcome Back</h2>
+              <p className="auth-subtitle">Sign in to your secure file gateway</p>
 
-          <form onSubmit={handleSubmit} id="login-form">
-            <div className="form-group">
-              <label className="form-label" htmlFor="login-email">Email Address</label>
-              <input
-                id="login-email"
-                type="email"
-                className={`form-input ${errors.email ? 'error' : ''}`}
-                value={email}
-                onChange={e => { setEmail(e.target.value); setErrors(prev => ({ ...prev, email: '' })); }}
-                placeholder="you@company.com"
-                autoComplete="email"
+              {/* Google OAuth Button */}
+              <button 
+                type="button" 
+                className="btn btn-google" 
+                onClick={handleGoogleLogin}
                 disabled={isUnlocking}
-              />
-              {errors.email && <span className="form-error">{errors.email}</span>}
-            </div>
+              >
+                <GoogleIcon />
+                Sign in with Google
+              </button>
+              <div className="auth-divider"><span>or</span></div>
 
-            <div className="form-group">
-              <label className="form-label" htmlFor="login-password">Password</label>
-              <div className="password-wrapper">
-                <input
-                  id="login-password"
-                  type={showPassword ? 'text' : 'password'}
-                  className={`form-input ${errors.password ? 'error' : ''}`}
-                  value={password}
-                  onChange={e => { setPassword(e.target.value); setErrors(prev => ({ ...prev, password: '' })); }}
-                  placeholder="••••••••"
-                  autoComplete="current-password"
-                  disabled={isUnlocking}
-                />
-                <button
-                  type="button"
-                  className="password-toggle"
-                  onClick={() => setShowPassword(!showPassword)}
-                  tabIndex={-1}
-                  disabled={isUnlocking}
-                >
-                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              <form onSubmit={handleSendOtp} id="login-form">
+                <div className="form-group">
+                  <label className="form-label" htmlFor="login-email">Email Address</label>
+                  <input
+                    id="login-email"
+                    type="email"
+                    className={`form-input ${errors.email ? 'error' : ''}`}
+                    value={email}
+                    onChange={e => { setEmail(e.target.value); setErrors(prev => ({ ...prev, email: '' })); }}
+                    placeholder="you@company.com"
+                    autoComplete="email"
+                    disabled={isUnlocking}
+                  />
+                  {errors.email && <span className="form-error">{errors.email}</span>}
+                </div>
+
+                <div className="form-group">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <label className="form-label" htmlFor="login-password" style={{ margin: 0 }}>Password</label>
+                    <Link to="/forgot" style={{ fontSize: '12px', color: 'var(--accent)', textDecoration: 'none' }}>Forgot Password?</Link>
+                  </div>
+                  <div className="password-wrapper">
+                    <input
+                      id="login-password"
+                      type={showPassword ? 'text' : 'password'}
+                      className={`form-input ${errors.password ? 'error' : ''}`}
+                      value={password}
+                      onChange={e => { setPassword(e.target.value); setErrors(prev => ({ ...prev, password: '' })); }}
+                      placeholder="••••••••"
+                      autoComplete="current-password"
+                      disabled={isUnlocking}
+                    />
+                    <button
+                      type="button"
+                      className="password-toggle"
+                      onClick={() => setShowPassword(!showPassword)}
+                      tabIndex={-1}
+                      disabled={isUnlocking}
+                    >
+                      {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                  {errors.password && <span className="form-error">{errors.password}</span>}
+                </div>
+
+                <button type="submit" className="btn btn-primary" disabled={loading || isUnlocking} id="login-submit">
+                  {loading ? <span className="spinner" /> : <LogIn size={16} />}
+                  {loading ? 'Sending Code...' : 'Sign In'}
                 </button>
+              </form>
+
+              <p className="auth-footer">
+                Don't have an account? <Link to="/signup">Create Account</Link>
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="back-link" onClick={() => { setStep('form'); setErrors({}); }}>
+                <ArrowLeft size={14} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
+                Back
               </div>
-              {errors.password && <span className="form-error">{errors.password}</span>}
-            </div>
+              <h2 className="auth-title">Verify Your Identity</h2>
+              <p className="auth-subtitle">Two-factor authentication required</p>
 
-            <button type="submit" className="btn btn-primary" disabled={loading || isUnlocking} id="login-submit">
-              {loading ? <span className="spinner" /> : <LogIn size={16} />}
-              {loading || isUnlocking ? 'Unlocking Gateway...' : 'Sign In'}
-            </button>
-          </form>
+              <form onSubmit={handleVerifyAndLogin} id="otp-form">
+                <div className="form-group">
+                  <div className="otp-hint">Enter the 6-digit code sent to {email}</div>
+                  <input
+                    type="text"
+                    className={`form-input otp-input ${errors.otp ? 'error' : ''}`}
+                    maxLength={6}
+                    autoFocus
+                    value={otp}
+                    onChange={e => { setOtp(e.target.value.replace(/\D/g, '')); setErrors(prev => ({ ...prev, otp: '' })); }}
+                    placeholder="000000"
+                    disabled={otpLoading || isUnlocking}
+                  />
+                  {errors.otp && <span className="form-error" style={{ textAlign: 'center', display: 'block' }}>{errors.otp}</span>}
+                </div>
 
-          <p className="auth-footer">
-            Don't have an account? <Link to="/signup">Create Account</Link>
-          </p>
+                <button type="submit" className="btn btn-primary" disabled={otpLoading || isUnlocking} id="otp-submit">
+                  {otpLoading ? <span className="spinner" /> : <Shield size={16} />}
+                  {otpLoading ? 'Unlocking Gateway...' : 'Verify & Sign In'}
+                </button>
+
+                <div className="otp-resend">
+                  {resendTimer > 0 ? (
+                    `Resend code in ${resendTimer}s`
+                  ) : (
+                    <button type="button" onClick={handleResendOtp} disabled={otpLoading || isUnlocking}>
+                      Resend Code
+                    </button>
+                  )}
+                </div>
+              </form>
+            </>
+          )}
+
         </div>
       </div>
     </div>

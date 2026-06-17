@@ -3,7 +3,7 @@ StackDrive — Flask Backend API
 Zero-Trust Secure Cloud File Ingestion Gateway
 """
 from dotenv import load_dotenv
-load_dotenv()  # Load .env file (VT_API_KEY, Fargate config, etc.)
+load_dotenv()  
 import os
 import uuid
 import threading
@@ -1102,13 +1102,8 @@ def download_file(file_id):
     if not file:
         return jsonify({'error': 'File not found'}), 404
 
-    is_recovery = request.args.get('recovery') == 'true'
-    if is_recovery:
-        if file.status not in ['safe', 'Integrity Verification Failed']:
-            return jsonify({'error': 'Only safe or integrity failed files can be downloaded in recovery mode'}), 403
-    else:
-        if file.status != 'safe':
-            return jsonify({'error': 'Only verified safe files can be downloaded'}), 403
+    if file.status != 'safe':
+        return jsonify({'error': 'This file has failed cryptographic verification (modified/tampered) and cannot be downloaded.'}), 403
 
     if not file.storage_path or not file.storage_path.startswith('s3://'):
         return jsonify({'error': 'File not available in AWS S3'}), 404
@@ -1133,69 +1128,41 @@ def download_file(file_id):
         if has_failed:
             reasons = integrity_warnings if integrity_warnings else (warnings if warnings else ["Decryption/Integrity failure"])
             
-            if not is_recovery:
-                # Mark file status
-                file.status = "Integrity Verification Failed"
-                
-                # Log security incident
-                audit_log = AuditLog(
-                    user_id=user.id,
-                    file_id=file.id,
-                    event_type='INTEGRITY_FAILED',
-                    failure_reason="; ".join(reasons),
-                    recovery_requested=False,
-                    ip_address=request.remote_addr,
-                    browser_info=request.user_agent.string
-                )
-                db.session.add(audit_log)
-                
-                # Add notification
-                notif = Notification(
-                    user_id=user.id,
-                    file_name=file.name,
-                    layer="Decryption Engine",
-                    threat_type="Integrity Verification Failed",
-                    action="Blocked download attempt due to tampering"
-                )
-                db.session.add(notif)
-                db.session.commit()
-                
-                return jsonify({
-                    "status": "integrity_failed",
-                    "message": "The file failed cryptographic verification.",
-                    "recovery_available": True,
-                    "reasons": reasons
-                }), 400
-            else:
-                if decrypted_data is None:
-                    return jsonify({'error': 'Recovery failed: the file is completely unrecoverable.'}), 500
-
-        download_name = file.name
-        headers = {}
-        if is_recovery:
-            name_parts = file.name.rsplit('.', 1)
-            if len(name_parts) == 2:
-                download_name = f"{name_parts[0]}_corrupted.{name_parts[1]}"
-            else:
-                download_name = f"{file.name}_corrupted"
+            # Mark file status
+            file.status = "Integrity Verification Failed"
             
-            # Log recovery download requested
+            # Log security incident
             audit_log = AuditLog(
                 user_id=user.id,
                 file_id=file.id,
-                event_type='RECOVERY_DOWNLOAD_REQUESTED',
-                failure_reason="; ".join(integrity_warnings) if integrity_warnings else "User requested recovery download",
-                recovery_requested=True,
+                event_type='INTEGRITY_FAILED',
+                failure_reason="; ".join(reasons),
+                recovery_requested=False,
                 ip_address=request.remote_addr,
                 browser_info=request.user_agent.string
             )
             db.session.add(audit_log)
+            
+            # Add notification
+            notif = Notification(
+                user_id=user.id,
+                file_name=file.name,
+                layer="Decryption Engine",
+                threat_type="Integrity Verification Failed",
+                action="Blocked download attempt due to tampering"
+            )
+            db.session.add(notif)
             db.session.commit()
             
-            # Set recovery headers
-            headers["X-Integrity-Status"] = "FAILED"
-            headers["X-Recovery-Download"] = "TRUE"
-            headers["X-Recovery-Reason"] = "; ".join(integrity_warnings) if integrity_warnings else "Verification failed"
+            return jsonify({
+                "status": "integrity_failed",
+                "message": "The file has been modified and cannot be downloaded.",
+                "recovery_available": False,
+                "reasons": reasons
+            }), 400
+
+        download_name = file.name
+        headers = {}
 
         response = send_file(
             io.BytesIO(decrypted_data if decrypted_data is not None else b''),
@@ -1655,9 +1622,10 @@ def process_shared_download(token, password=None, email=None):
             return jsonify({'error': 'Incorrect password'}), 401
 
     file_obj = link.file
+    if file_obj.status != 'safe':
+        return jsonify({'error': 'This file has failed cryptographic verification (modified/tampered) and cannot be downloaded.'}), 403
+
     user_obj = User.query.get(file_obj.user_id)
-    
-    is_recovery = (request.args.get('recovery') == 'true') or (request.is_json and request.json and request.json.get('recovery') == True)
     
     from encryption import create_encryption_engine
     try:
@@ -1677,42 +1645,38 @@ def process_shared_download(token, password=None, email=None):
         if has_failed:
             reasons = integrity_warnings if integrity_warnings else (warnings if warnings else ["Decryption/Integrity failure"])
             
-            if not is_recovery:
-                # Mark file status
-                file_obj.status = "Integrity Verification Failed"
-                
-                # Log security incident
-                audit_log = AuditLog(
-                    user_id=user_obj.id,
-                    file_id=file_obj.id,
-                    event_type='INTEGRITY_FAILED',
-                    failure_reason="; ".join(reasons),
-                    recovery_requested=False,
-                    ip_address=request.remote_addr,
-                    browser_info=request.user_agent.string
-                )
-                db.session.add(audit_log)
-                
-                # Create a security alert notification for owner
-                notif = Notification(
-                    user_id=link.owner_id,
-                    file_name=file_obj.name,
-                    layer="Share Service",
-                    threat_type="Integrity Verification Failed",
-                    action="Blocked shared download attempt due to tampering"
-                )
-                db.session.add(notif)
-                db.session.commit()
-                
-                return jsonify({
-                    "status": "integrity_failed",
-                    "message": "The file failed cryptographic verification.",
-                    "recovery_available": True,
-                    "reasons": reasons
-                }), 400
-            else:
-                if decrypted_data is None:
-                    return jsonify({'error': 'Recovery failed: the file is completely unrecoverable.'}), 500
+            # Mark file status
+            file_obj.status = "Integrity Verification Failed"
+            
+            # Log security incident
+            audit_log = AuditLog(
+                user_id=user_obj.id,
+                file_id=file_obj.id,
+                event_type='INTEGRITY_FAILED',
+                failure_reason="; ".join(reasons),
+                recovery_requested=False,
+                ip_address=request.remote_addr,
+                browser_info=request.user_agent.string
+            )
+            db.session.add(audit_log)
+            
+            # Create a security alert notification for owner
+            notif = Notification(
+                user_id=link.owner_id,
+                file_name=file_obj.name,
+                layer="Share Service",
+                threat_type="Integrity Verification Failed",
+                action="Blocked shared download attempt due to tampering"
+            )
+            db.session.add(notif)
+            db.session.commit()
+            
+            return jsonify({
+                "status": "integrity_failed",
+                "message": "The file has been modified and cannot be downloaded.",
+                "recovery_available": False,
+                "reasons": reasons
+            }), 400
 
     except Exception as e:
         print(f'[DECRYPTION ERROR] {e}')
@@ -1737,7 +1701,7 @@ def process_shared_download(token, password=None, email=None):
         file_id=link.file_id,
         share_token_id=link.id,
         share_token=token,
-        detail=f"File downloaded successfully by {email_clean or 'Anonymous'} (IP: {request.remote_addr}){' [RECOVERY]' if is_recovery else ''}"
+        detail=f"File downloaded successfully by {email_clean or 'Anonymous'} (IP: {request.remote_addr})"
     )
     db.session.add(log)
     
@@ -1747,39 +1711,15 @@ def process_shared_download(token, password=None, email=None):
             user_id=link.owner_id,
             file_name=file_obj.name,
             layer="Share Service",
-            threat_type="File Downloaded" if not is_recovery else "Recovery File Downloaded",
+            threat_type="File Downloaded",
             action=f"Downloaded by {email_clean or 'Anonymous recipient'} (IP: {request.remote_addr})"
         )
         db.session.add(notif)
     except Exception as e:
         print(f"Notification creation failed: {e}")
 
-    # If it is recovery, rename file and set headers
     download_name = file_obj.name
     headers = {}
-    if is_recovery:
-        name_parts = file_obj.name.rsplit('.', 1)
-        if len(name_parts) == 2:
-            download_name = f"{name_parts[0]}_corrupted.{name_parts[1]}"
-        else:
-            download_name = f"{file_obj.name}_corrupted"
-        
-        # Log recovery download requested in AuditLog
-        audit_log = AuditLog(
-            user_id=user_obj.id,
-            file_id=file_obj.id,
-            event_type='RECOVERY_DOWNLOAD_REQUESTED',
-            failure_reason="; ".join(integrity_warnings) if integrity_warnings else "User requested recovery download via share link",
-            recovery_requested=True,
-            ip_address=request.remote_addr,
-            browser_info=request.user_agent.string
-        )
-        db.session.add(audit_log)
-        
-        # Set recovery headers
-        headers["X-Integrity-Status"] = "FAILED"
-        headers["X-Recovery-Download"] = "TRUE"
-        headers["X-Recovery-Reason"] = "; ".join(integrity_warnings) if integrity_warnings else "Verification failed"
 
     db.session.commit()
 

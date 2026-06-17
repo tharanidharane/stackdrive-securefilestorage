@@ -60,11 +60,11 @@ export default function ShareLanding() {
     return () => clearInterval(timer);
   }, [shareInfo]);
 
-  const triggerDownload = async (forceRecovery = false) => {
+  const triggerDownload = async () => {
     setDownloading(true);
     setDownloadWarning(null);
     try {
-      const result = await api.downloadSharedFile(token, { password, email, recovery: forceRecovery });
+      const result = await api.downloadSharedFile(token, { password, email });
       
       if (result.integrityFailed) {
         setIntegrityReasons(result.reasons || []);
@@ -75,21 +75,7 @@ export default function ShareLanding() {
 
       const { blob, warning } = result;
       let downloadName = shareInfo.fileName;
-      if (forceRecovery) {
-        const dotIdx = shareInfo.fileName.lastIndexOf('.');
-        if (dotIdx !== -1) {
-          downloadName = `${shareInfo.fileName.substring(0, dotIdx)}_corrupted${shareInfo.fileName.substring(dotIdx)}`;
-        } else {
-          downloadName = `${shareInfo.fileName}_corrupted`;
-        }
-        
-        // Show persistent warning banner
-        localStorage.setItem('recovery_banner_active', 'true');
-        window.dispatchEvent(new Event('storage'));
-        window.dispatchEvent(new Event('recovery_banner_update'));
-        
-        alert('⚠️ Recovery Copy Downloaded\n\nThis file failed integrity verification and may be corrupted or modified. Use with caution.');
-      } else if (warning) {
+      if (warning) {
         setDownloadWarning(warning);
         alert(`SECURITY WARNING: The downloaded file appears to have been modified or tampered with:\n\n${warning.split('; ').map(w => '• ' + w).join('\n')}`);
       }
@@ -130,7 +116,7 @@ export default function ShareLanding() {
       alert('This share link is password-protected. Please enter the password.');
       return;
     }
-    await triggerDownload(false);
+    await triggerDownload();
   };
 
   if (loading) {
@@ -475,30 +461,21 @@ export default function ShareLanding() {
       <Modal
         isOpen={showIntegrityModal}
         onClose={() => setShowIntegrityModal(false)}
-        title="⚠ Security Warning"
+        title="⚠ Security Verification Failed"
         actions={
           <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', width: '100%' }}>
             <button className="btn btn-secondary" onClick={() => setShowIntegrityModal(false)}>
-              Cancel Download
-            </button>
-            <button className="btn btn-danger" onClick={() => triggerDownload(true)}>
-              Download Recovery Copy
+              Close
             </button>
           </div>
         }
       >
         <div style={{ color: 'var(--text-primary)', padding: '10px 0' }}>
           <p style={{ fontWeight: '600', color: '#ef4444', marginBottom: '14px', fontSize: '1.05rem' }}>
-            This file failed integrity verification.
+            This file failed integrity verification, indicating it has been modified or tampered with.
           </p>
-          <p style={{ fontSize: '0.9rem', marginBottom: '12px' }}>Possible causes:</p>
-          <ul style={{ margin: '0 0 16px 0', paddingLeft: '20px', fontSize: '0.9rem', color: '#94a3b8' }}>
-            <li style={{ marginBottom: '6px' }}>• Storage corruption</li>
-            <li style={{ marginBottom: '6px' }}>• Accidental modification</li>
-            <li style={{ marginBottom: '6px' }}>• Unauthorized tampering</li>
-          </ul>
-          <p style={{ fontSize: '0.9rem', color: '#94a3b8', fontStyle: 'italic' }}>
-            The file can no longer be considered trustworthy.
+          <p style={{ fontSize: '0.9rem', marginBottom: '12px', color: '#cbd5e1' }}>
+            To protect your system, this download has been blocked.
           </p>
           {integrityReasons.length > 0 && (
             <div style={{ marginTop: '16px', padding: '10px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px' }}>

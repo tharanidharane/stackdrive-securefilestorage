@@ -110,9 +110,9 @@ export default function FileHistory() {
     setShowDetail(true);
   };
 
-  const handleDownload = async (file, forceRecovery = false) => {
+  const handleDownload = async (file) => {
     try {
-      const result = await api.downloadFile(file.id, forceRecovery);
+      const result = await api.downloadFile(file.id);
       
       if (result.integrityFailed) {
         setIntegrityFailedFile(file);
@@ -124,24 +124,7 @@ export default function FileHistory() {
 
       const { blob, warning } = result;
       let downloadName = file.name;
-      if (forceRecovery) {
-        const dotIdx = file.name.lastIndexOf('.');
-        if (dotIdx !== -1) {
-          downloadName = `${file.name.substring(0, dotIdx)}_corrupted${file.name.substring(dotIdx)}`;
-        } else {
-          downloadName = `${file.name}_corrupted`;
-        }
-        
-        localStorage.setItem('recovery_banner_active', 'true');
-        window.dispatchEvent(new Event('storage'));
-        window.dispatchEvent(new Event('recovery_banner_update'));
-        
-        addToast(
-          '⚠️ Recovery Copy Downloaded. This file failed integrity verification and may be corrupted or modified. Use with caution.',
-          'warning',
-          10000
-        );
-      } else if (warning) {
+      if (warning) {
         const warningList = warning.split('; ');
         warningList.forEach(warn => {
           addToast(`SECURITY WARNING: ${warn}`, 'warning', 10000);
@@ -704,30 +687,21 @@ export default function FileHistory() {
       <Modal
         isOpen={showIntegrityModal}
         onClose={() => setShowIntegrityModal(false)}
-        title="⚠ Security Warning"
+        title="⚠ Security Verification Failed"
         actions={
           <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', width: '100%' }}>
             <button className="btn btn-secondary" onClick={() => setShowIntegrityModal(false)}>
-              Cancel Download
-            </button>
-            <button className="btn btn-danger" onClick={() => handleDownload(integrityFailedFile, true)}>
-              Download Recovery Copy
+              Close
             </button>
           </div>
         }
       >
         <div style={{ color: 'var(--text-primary)', padding: '10px 0' }}>
           <p style={{ fontWeight: '600', color: 'var(--color-threat, #ef4444)', marginBottom: '14px', fontSize: '1.05rem' }}>
-            This file failed integrity verification.
+            This file failed integrity verification, indicating it has been modified or tampered with.
           </p>
-          <p style={{ fontSize: '0.9rem', marginBottom: '12px' }}>Possible causes:</p>
-          <ul style={{ margin: '0 0 16px 0', paddingLeft: '20px', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
-            <li style={{ marginBottom: '6px' }}>• Storage corruption</li>
-            <li style={{ marginBottom: '6px' }}>• Accidental modification</li>
-            <li style={{ marginBottom: '6px' }}>• Unauthorized tampering</li>
-          </ul>
-          <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-            The file can no longer be considered trustworthy.
+          <p style={{ fontSize: '0.9rem', marginBottom: '12px', color: 'var(--text-secondary)' }}>
+            To protect your system, this download has been blocked.
           </p>
           {integrityReasons.length > 0 && (
             <div style={{ marginTop: '16px', padding: '10px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px' }}>

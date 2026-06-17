@@ -425,8 +425,8 @@ class ApiService {
     return this.request(`/files/${fileId}`);
   }
 
-  async downloadFile(fileId, recovery = false) {
-    const url = `${API_BASE}/files/${fileId}/download${recovery ? '?recovery=true' : ''}`;
+  async downloadFile(fileId) {
+    const url = `${API_BASE}/files/${fileId}/download`;
     const token = this.getToken();
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
@@ -570,7 +570,7 @@ class ApiService {
   }
 
   async downloadSharedFile(token, options = {}) {
-    const url = `${API_BASE}/share/${token}/download${options.recovery ? '?recovery=true' : ''}`;
+    const url = `${API_BASE}/share/${token}/download`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -579,7 +579,6 @@ class ApiService {
       body: JSON.stringify({
         password: options.password || null,
         email: options.email || null,
-        recovery: options.recovery || false,
       })
     });
     if (!response.ok) {

@@ -43,10 +43,7 @@ app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_DEFAULT_SENDER', os.env
 mail = Mail(app)
 
 # Init extensions
-CORS(app, origins=[
-    'http://localhost:5173', 'http://127.0.0.1:5173',
-    'http://localhost:5174', 'http://127.0.0.1:5174'
-], supports_credentials=True, expose_headers=['X-Decryption-Warning'])
+CORS(app, resources={r"/api/*": {"origins": "*"}}, expose_headers=['X-Decryption-Warning'])
 
 jwt = JWTManager(app)
 db.init_app(app)
@@ -502,6 +499,39 @@ def get_me():
     if not user:
         return jsonify({'error': 'User not found'}), 404
     return jsonify({'user': user.to_dict()}), 200
+
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    from sqlalchemy import text
+    health_status = {
+        'status': 'healthy',
+        'database': 'disconnected',
+        'pqc_encryption': 'disabled',
+        'timestamp': datetime.utcnow().isoformat() + 'Z'
+    }
+    
+    # Check Database connection
+    try:
+        db.session.execute(text('SELECT 1'))
+        health_status['database'] = 'connected'
+    except Exception as e:
+        health_status['status'] = 'unhealthy'
+        health_status['database'] = f'error: {str(e)}'
+        
+    # Check PQC status
+    try:
+        from encryption import PQC_ENABLED, _oqs_available
+        if PQC_ENABLED and _oqs_available:
+            health_status['pqc_encryption'] = 'enabled (ML-KEM-768 + ML-DSA-65)'
+        elif PQC_ENABLED:
+            health_status['pqc_encryption'] = 'enabled but liboqs missing (fallback to KMS)'
+        else:
+            health_status['pqc_encryption'] = 'disabled (KMS envelope encryption only)'
+    except Exception as e:
+        health_status['pqc_encryption'] = f'error checking status: {str(e)}'
+        
+    return jsonify(health_status), 200
 
 
 def _get_aws_session(user):

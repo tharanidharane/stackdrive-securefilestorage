@@ -39,7 +39,7 @@ export default function Dashboard({ user }) {
   const [isSharing, setIsSharing] = useState(false);
   const [shareHours, setShareHours] = useState(24);
   const [generatedLink, setGeneratedLink] = useState(null);
-  
+
   // Advanced sharing states
   const [shareConfigOpen, setShareConfigOpen] = useState(false);
   const [shareExpiry, setShareExpiry] = useState('24h');
@@ -53,7 +53,7 @@ export default function Dashboard({ user }) {
   const [integrityFailedFile, setIntegrityFailedFile] = useState(null);
   const [integrityReasons, setIntegrityReasons] = useState([]);
   const [showIntegrityModal, setShowIntegrityModal] = useState(false);
-  
+
   const { addToast } = useToast();
 
   const awsConnected = user?.aws_connected !== false;
@@ -95,7 +95,7 @@ export default function Dashboard({ user }) {
   const handleDownload = async (file) => {
     try {
       const result = await api.downloadFile(file.id);
-      
+
       if (result.integrityFailed) {
         setIntegrityFailedFile(file);
         setIntegrityReasons(result.reasons || []);
@@ -132,8 +132,8 @@ export default function Dashboard({ user }) {
   const handleShare = async (file) => {
     setIsSharing(true);
     try {
-      const finalExpiry = shareExpiry === 'custom' 
-        ? `${customExpiryValue}${customExpiryUnit}` 
+      const finalExpiry = shareExpiry === 'custom'
+        ? `${customExpiryValue}${customExpiryUnit}`
         : shareExpiry;
       const finalLimit = shareLimit === 'custom'
         ? Number(customLimitValue)
@@ -214,8 +214,8 @@ export default function Dashboard({ user }) {
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               {!shareConfigOpen ? (
                 <>
-                  <button 
-                    className="btn" 
+                  <button
+                    className="btn"
                     style={{ width: 'auto', background: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6', border: '1px solid rgba(59, 130, 246, 0.2)' }}
                     onClick={() => setShareConfigOpen(true)}
                   >
@@ -238,8 +238,8 @@ export default function Dashboard({ user }) {
                   <button className="btn" style={{ width: 'auto' }} onClick={() => setShareConfigOpen(false)}>
                     Back
                   </button>
-                  <button 
-                    className="btn btn-primary" 
+                  <button
+                    className="btn btn-primary"
                     style={{ width: 'auto' }}
                     onClick={() => handleShare(selectedFile)}
                     disabled={isSharing}
@@ -257,7 +257,7 @@ export default function Dashboard({ user }) {
             {shareConfigOpen ? (
               <div>
                 <h3 style={{ color: 'var(--text-primary)', marginBottom: '20px', fontSize: '1.1rem', fontWeight: '600' }}>Configure Secure Share</h3>
-                
+
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     <label style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Expiration Time</label>
@@ -503,9 +503,9 @@ export default function Dashboard({ user }) {
                   }}>
                     <span style={{ color: '#10b981', fontWeight: 'bold', fontSize: '0.9rem' }}>✨ Secure Link Generated Successfully</span>
                     <div style={{ display: 'flex', gap: '8px' }}>
-                      <input 
-                        type="text" 
-                        readOnly 
+                      <input
+                        type="text"
+                        readOnly
                         value={generatedLink}
                         style={{
                           flex: 1,
@@ -518,7 +518,7 @@ export default function Dashboard({ user }) {
                           fontSize: '0.9rem'
                         }}
                       />
-                      <button 
+                      <button
                         className="btn btn-primary"
                         style={{ padding: '8px 16px', width: 'auto' }}
                         onClick={() => {
@@ -556,10 +556,9 @@ export default function Dashboard({ user }) {
                 {selectedFile.risk !== null && selectedFile.risk !== undefined && (
                   <div className="file-detail__row">
                     <span className="file-detail__label">Risk Score</span>
-                    <span className={`file-detail__value mono ${
-                      selectedFile.risk < 10 ? 'text-safe' :
-                      selectedFile.risk <= 60 ? 'text-queue' : 'text-threat'
-                    }`}>{selectedFile.risk}%</span>
+                    <span className={`file-detail__value mono ${selectedFile.risk < 10 ? 'text-safe' :
+                        selectedFile.risk <= 60 ? 'text-queue' : 'text-threat'
+                      }`}>{selectedFile.risk}%</span>
                   </div>
                 )}
                 {selectedFile.sha256 && (
@@ -576,17 +575,15 @@ export default function Dashboard({ user }) {
                     <h4 className="file-detail__section-title">Pipeline Results</h4>
                     {selectedFile.pipelineStages.map((stage, i) => (
                       <div className="file-detail__stage" key={i}>
-                        <span className={`file-detail__stage-dot ${
-                          stage.status === 'pass' ? 'text-pass' :
-                          stage.status === 'fail' ? 'text-threat' : 'text-muted'
-                        }`}>
+                        <span className={`file-detail__stage-dot ${stage.status === 'pass' ? 'text-pass' :
+                            stage.status === 'fail' ? 'text-threat' : 'text-muted'
+                          }`}>
                           {stage.status === 'pass' ? '●' : stage.status === 'fail' ? '●' : '○'}
                         </span>
                         <span className="file-detail__stage-name">{stage.name}</span>
-                        <span className={`file-detail__stage-status ${
-                          stage.status === 'pass' ? 'text-pass' :
-                          stage.status === 'fail' ? 'text-threat' : 'text-muted'
-                        }`}>{stage.status.toUpperCase()}</span>
+                        <span className={`file-detail__stage-status ${stage.status === 'pass' ? 'text-pass' :
+                            stage.status === 'fail' ? 'text-threat' : 'text-muted'
+                          }`}>{stage.status.toUpperCase()}</span>
                       </div>
                     ))}
                     {selectedFile.status === 'safe' && (

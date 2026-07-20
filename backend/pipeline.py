@@ -42,7 +42,7 @@ except ImportError:
     magic = None
 
 try:
-    import yara
+    import yara #type:ignore
 except ImportError:
     yara = None
 
@@ -621,7 +621,7 @@ def _ensure_yara_rules():
         try:
             if yara is None:
                 try:
-                    import yara
+                    import yara #type:ignore
                 except ImportError:
                     raise ImportError("yara-python not installed")
             os.makedirs(YARA_RULES_DIR, exist_ok=True)

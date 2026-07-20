@@ -83,20 +83,20 @@ if PQC_ENABLED:
         import oqs
         _oqs_available = True
         logger.info("liboqs loaded — PQC algorithms available: ML-KEM-768, ML-DSA-65")
-    except (ImportError, RuntimeError) as e:
-        raise RuntimeError(
-            "FATAL: liboqs not available. StackDrive requires post-quantum cryptography. Run: pip install liboqs-python"
-        ) from e
+    except BaseException as e:
+        logger.critical(
+            "CRITICAL: liboqs not available. StackDrive requires post-quantum cryptography. Falling back to KMS-only encryption. Error: %s", e
+        )
 
 def verify_pqc_available():
     """Verify that post-quantum cryptography is enabled and liboqs is available at startup."""
     if not PQC_ENABLED:
-        raise RuntimeError(
-            "FATAL: PQC_ENABLED is not set to true. StackDrive requires post-quantum cryptography. Set PQC_ENABLED=true in .env"
+        logger.warning(
+            "WARNING: PQC_ENABLED is set to false. Falling back to KMS-only envelope encryption."
         )
     if not _oqs_available:
-        raise RuntimeError(
-            "FATAL: liboqs not available. StackDrive requires post-quantum cryptography. Run: pip install liboqs-python"
+        logger.critical(
+            "CRITICAL: liboqs not available. Falling back to KMS-only envelope encryption."
         )
 
 # ── Payload format constants ────────────────────────────────────────

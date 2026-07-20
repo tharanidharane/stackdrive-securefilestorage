@@ -14,7 +14,7 @@ export default function LoginPage({ onLogin }) {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
-  
+
   // Cinematic Unlock State
   const [isUnlocking, setIsUnlocking] = useState(false);
   const [lastLoginInfo, setLastLoginInfo] = useState('');
@@ -24,7 +24,7 @@ export default function LoginPage({ onLogin }) {
   const [otp, setOtp] = useState('');
   const [otpLoading, setOtpLoading] = useState(false);
   const [resendTimer, setResendTimer] = useState(0);
-  
+
   const navigate = useNavigate();
   const { addToast } = useToast();
 
@@ -46,40 +46,13 @@ export default function LoginPage({ onLogin }) {
     return Object.keys(errs).length === 0;
   };
 
-  const handleSendOtp = async (e) => {
+  const handleDirectLogin = async (e) => {
     e.preventDefault();
     if (!validateForm()) return;
     setLoading(true);
     try {
-      await api.sendOtp(email, 'login');
-      setStep('otp');
-      setResendTimer(30);
-      addToast('Verification code sent to your email', 'success');
-    } catch (err) {
-      if (err.status === 404) {
-        setErrors({ email: 'No account found with this email' });
-      } else {
-        addToast(err.message || 'Failed to send verification code', 'error');
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleVerifyAndLogin = async (e) => {
-    e.preventDefault();
-    if (!otp || otp.length !== 6) {
-      setErrors({ otp: 'Please enter 6-digit code' });
-      return;
-    }
-    setOtpLoading(true);
-    try {
-      // Step 2: verify OTP
-      await api.verifyOtp(email, otp, 'login');
-      
-      // Step 3: Validate password and perform actual login
       const loginData = await api.login(email, password);
-      
+
       // Format last login info if available
       if (loginData.user && loginData.user.last_login_at) {
         const dateStr = new Date(loginData.user.last_login_at).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
@@ -90,21 +63,22 @@ export default function LoginPage({ onLogin }) {
 
       // Play cinematic unlock
       setIsUnlocking(true);
-      
+
       setTimeout(() => {
         onLogin(loginData.user);
         navigate('/overview');
       }, 2500);
 
     } catch (err) {
-      if (err.status === 400) {
-        setErrors({ otp: 'Invalid or expired OTP' });
-      } else if (err.status === 401) {
-        setErrors({ otp: err.message || 'Authentication failed' });
+      if (err.status === 401) {
+        setErrors({ password: err.message || 'Incorrect password' });
+      } else if (err.status === 404) {
+        setErrors({ email: 'No account found with this email' });
       } else {
-        addToast(err.message || 'Verification failed', 'error');
+        addToast(err.message || 'Login failed', 'error');
       }
-      setOtpLoading(false);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -176,7 +150,7 @@ export default function LoginPage({ onLogin }) {
           {isUnlocking ? (
             <div style={{ textAlign: 'center', padding: '2rem 0' }}>
               <h2 className="auth-title">Unlocking Gateway...</h2>
-              <div className="spinner" style={{ width: 30, height: 30, margin: '2rem auto', borderTopColor: 'var(--accent)' }}/>
+              <div className="spinner" style={{ width: 30, height: 30, margin: '2rem auto', borderTopColor: 'var(--accent)' }} />
               {lastLoginInfo && (
                 <p style={{ fontSize: '12px', color: 'var(--text-muted)', maxWidth: '280px', margin: '0 auto', lineHeight: '1.5' }}>
                   {lastLoginInfo}
@@ -189,9 +163,9 @@ export default function LoginPage({ onLogin }) {
               <p className="auth-subtitle">Sign in to your secure file gateway</p>
 
               {/* Google OAuth Button */}
-              <button 
-                type="button" 
-                className="btn btn-google" 
+              <button
+                type="button"
+                className="btn btn-google"
                 onClick={handleGoogleLogin}
                 disabled={isUnlocking}
               >
@@ -200,7 +174,7 @@ export default function LoginPage({ onLogin }) {
               </button>
               <div className="auth-divider"><span>or</span></div>
 
-              <form onSubmit={handleSendOtp} id="login-form">
+              <form onSubmit={handleDirectLogin} id="login-form">
                 <div className="form-group">
                   <label className="form-label" htmlFor="login-email">Email Address</label>
                   <input
@@ -247,7 +221,7 @@ export default function LoginPage({ onLogin }) {
 
                 <button type="submit" className="btn btn-primary" disabled={loading || isUnlocking} id="login-submit">
                   {loading ? <span className="spinner" /> : <LogIn size={16} />}
-                  {loading ? 'Sending Code...' : 'Sign In'}
+                  {loading ? 'Signing In...' : 'Sign In'}
                 </button>
               </form>
 

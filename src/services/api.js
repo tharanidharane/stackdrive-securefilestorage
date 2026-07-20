@@ -8,7 +8,16 @@
  * - 500MB files upload in seconds instead of minutes
  */
 
-const API_BASE = 'http://localhost:5000/api';
+const getApiBase = () => {
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    const protocol = window.location.protocol;
+    return `${protocol}//${host}:5000/api`;
+  }
+  return 'http://localhost:5000/api';
+};
+
+const API_BASE = getApiBase();
 
 // Upload configuration
 const UPLOAD_STRATEGY = 's3';    // 'local' for local staged scan (faster, no S3 quarantine download); 's3' for direct AWS S3 presigned multipart upload

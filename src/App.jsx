@@ -89,7 +89,7 @@ function HeaderWithTitle({ unreadCount, email, onMarkAllRead, onLogout }) {
   const location = useLocation();
   const pageInfo = pageTitles[location.pathname] || { title: 'StackDrive', subtitle: '' };
   return <Header title={pageInfo.title} subtitle={pageInfo.subtitle}
-                 unreadCount={unreadCount} email={email} onMarkAllRead={onMarkAllRead} onLogout={onLogout} />;
+    unreadCount={unreadCount} email={email} onMarkAllRead={onMarkAllRead} onLogout={onLogout} />;
 }
 
 function AppContent() {

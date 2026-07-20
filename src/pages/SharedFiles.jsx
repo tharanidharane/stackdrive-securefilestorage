@@ -2,13 +2,13 @@ import { useState, useEffect, useCallback } from 'react';
 import { useToast } from '../components/Toast';
 import Modal from '../components/Modal';
 import api from '../services/api';
-import { 
-  Copy, 
-  Trash2, 
-  Clock, 
-  Lock, 
-  Unlock, 
-  History, 
+import {
+  Copy,
+  Trash2,
+  Clock,
+  Lock,
+  Unlock,
+  History,
   ExternalLink,
   ShieldAlert,
   Download,
@@ -92,7 +92,7 @@ export default function SharedFiles() {
     try {
       await api.extendShare(shareId, extendHours);
       addToast(`Expiration extended by ${extendHours} hours`, 'success');
-      
+
       // Update local states
       const updatedShares = shares.map(s => {
         if (s.id === shareId) {
@@ -199,25 +199,25 @@ export default function SharedFiles() {
                       </td>
                       <td style={{ textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
                         <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                          <button 
-                            className="icon-btn" 
+                          <button
+                            className="icon-btn"
                             title="Copy link"
                             onClick={() => handleCopy(share)}
                           >
                             <Copy size={16} />
                           </button>
-                          <a 
-                            href={shareUrl} 
-                            target="_blank" 
-                            rel="noopener noreferrer" 
-                            className="icon-btn" 
+                          <a
+                            href={shareUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="icon-btn"
                             title="Visit landing page"
                           >
                             <ExternalLink size={16} />
                           </a>
                           {share.status === 'active' && new Date(share.expiresAt) > new Date() && (
-                            <button 
-                              className="icon-btn icon-btn--danger" 
+                            <button
+                              className="icon-btn icon-btn--danger"
                               title="Revoke Share"
                               onClick={() => handleRevoke(share.id)}
                             >
@@ -246,8 +246,8 @@ export default function SharedFiles() {
         actions={
           <>
             {selectedShare?.status === 'active' && new Date(selectedShare.expiresAt) > new Date() && (
-              <button 
-                className="btn btn-danger" 
+              <button
+                className="btn btn-danger"
                 style={{ width: 'auto' }}
                 onClick={() => handleRevoke(selectedShare.id)}
               >
@@ -297,10 +297,10 @@ export default function SharedFiles() {
 
             {/* Link Copy Bar */}
             <div className="share-link-bar">
-              <input 
-                type="text" 
-                readOnly 
-                value={`${window.location.origin}/s/${selectedShare.token}`} 
+              <input
+                type="text"
+                readOnly
+                value={`${window.location.origin}/s/${selectedShare.token}`}
               />
               <button className="btn btn-primary" onClick={() => handleCopy(selectedShare)}>
                 Copy Link
@@ -339,7 +339,7 @@ export default function SharedFiles() {
                   {auditLogs.map((log) => {
                     let icon = <History size={14} />;
                     let colorClass = 'audit-icon--info';
-                    
+
                     if (log.event && log.event.includes('download')) {
                       icon = <Download size={14} />;
                       colorClass = 'audit-icon--success';

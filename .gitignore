@@ -92,5 +92,5 @@ Thumbs.db
 backend/__pycache__/
 backend/storage/
 backend/stackdrive.db
-
-
+backend/stackdrive.db.empty
+backend/liboqs/
